@@ -15,14 +15,14 @@
     <ClInclude Include="BonDriver_Mirakurun.h">
       <Filter>ヘッダファイル</Filter>
     </ClInclude>
-    <ClInclude Include="picojson\picojson.h">
-      <Filter>ヘッダファイル</Filter>
+    <ClInclude Include="nlohmann\json.hpp">
+      <Filter>ヘッダファイル\nlohmann</Filter>
     </ClInclude>
     <ClInclude Include="binzume\http.h">
-      <Filter>ヘッダファイル</Filter>
+      <Filter>ヘッダファイル\binzume</Filter>
     </ClInclude>
     <ClInclude Include="binzume\socket.h">
-      <Filter>ヘッダファイル</Filter>
+      <Filter>ヘッダファイル\binzume</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -31,6 +31,12 @@
     </Filter>
     <Filter Include="ヘッダファイル">
       <UniqueIdentifier>{79045bde-3f39-45a8-b2ab-950f964f9197}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ヘッダファイル\nlohmann">
+      <UniqueIdentifier>{f1984e71-44a3-410c-81f6-16ec0ca5bd2e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ヘッダファイル\binzume">
+      <UniqueIdentifier>{71a6f903-be01-46fc-bf1e-fc76eeff0c49}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

@@ -17,11 +17,11 @@
 class IBonDriver2 : public IBonDriver
 {
 	public:
-	virtual LPCTSTR GetTunerName(void) = 0;
+	virtual LPCWSTR GetTunerName(void) = 0;
 
 	virtual const BOOL IsTunerOpening(void) = 0;
-	virtual LPCTSTR EnumTuningSpace(const DWORD dwSpace) = 0;
-	virtual LPCTSTR EnumChannelName(const DWORD dwSpace, const DWORD dwChannel) = 0;
+	virtual LPCWSTR EnumTuningSpace(const DWORD dwSpace) = 0;
+	virtual LPCWSTR EnumChannelName(const DWORD dwSpace, const DWORD dwChannel) = 0;
 
 	virtual const BOOL SetChannel(const DWORD dwSpace, const DWORD dwChannel) = 0;
 

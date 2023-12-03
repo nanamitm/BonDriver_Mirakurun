@@ -1,13 +1,24 @@
 ﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
 
+
+#define _PCH_STATIC_CONST
+
+#include <xstring>
+#include <string>
+#include <vector>
+#include <algorithm>
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <InitGuid.h>
 #include "IBonDriver2.h"
 #include "binzume\http.h"
-#include "picojson\picojson.h"
+#include "./nlohmann/json.hpp"
+
 using namespace std;
 using namespace Net;
+using json = nlohmann::json;
+
 
 #if !defined(_BONTUNER_H_)
 #define _BONTUNER_H_
@@ -18,19 +29,25 @@ using namespace Net;
 
 #define dllimport dllexport
 
-
 #define TUNER_NAME "BonDriver_Mirakurun"
+#define TUNER_NAME_W L"BonDriver_Mirakurun"
 
 // 受信サイズ
 #define TSDATASIZE	48128	// TSデータのサイズ 188 * 256
 
-static wchar_t g_IniFilePath[MAX_PATH] = { '\0' };
+static char g_IniFilePath[MAX_PATH] = { '\0' };
 
 // チューナ空間
-#define SPACE_NUM 8
-static char *g_pType[SPACE_NUM];
-static DWORD g_Max_Type;
-static DWORD g_Channel_Base[SPACE_NUM];
+typedef struct
+{
+	std::u8string name;
+	size_t channel_base;
+	size_t channel_num;
+} TSpaceType;
+
+typedef std::vector<TSpaceType> TSpaceTypes;
+typedef TSpaceTypes::iterator  TSpaceTypesI;
+TSpaceTypes g_SpaceTypes;
 
 #define MAX_HOST_LEN	256
 #define MAX_PORT_LEN	8
@@ -39,7 +56,7 @@ static char g_ServerPort[MAX_PORT_LEN];
 static int g_DecodeB25;
 static int g_Priority;
 static int g_Service_Split;
-picojson::value g_Channel_JSON;
+json g_Channel_JSON;
 static int g_MagicPacket_Enable;
 static char g_MagicPacket_TargetMAC[18];
 static char g_MagicPacket_TargetIP[16];
@@ -55,34 +72,34 @@ public:
 	void InitChannel(void);
 
 	// IBonDriver
-	const BOOL OpenTuner(void);
-	void CloseTuner(void);
+	const BOOL OpenTuner(void) override;
+	void CloseTuner(void) override;
 
-	const BOOL SetChannel(const BYTE bCh);
-	const float GetSignalLevel(void);
+	const BOOL SetChannel(const BYTE bCh) override;
+	const float GetSignalLevel(void) override;
 
-	const DWORD WaitTsStream(const DWORD dwTimeOut = 0);
-	const DWORD GetReadyCount(void);
+	const DWORD WaitTsStream(const DWORD dwTimeOut = 0) override;
+	const DWORD GetReadyCount(void) override;
 
-	const BOOL GetTsStream(BYTE *pDst, DWORD *pdwSize, DWORD *pdwRemain);
-	const BOOL GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain);
+	const BOOL GetTsStream(BYTE *pDst, DWORD *pdwSize, DWORD *pdwRemain) override;
+	const BOOL GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain) override;
 
-	void PurgeTsStream(void);
+	void PurgeTsStream(void) override;
 
 // IBonDriver2(暫定)
-	LPCTSTR GetTunerName(void);
+	LPCWSTR GetTunerName(void) override;
 
-	const BOOL IsTunerOpening(void);
+	const BOOL IsTunerOpening(void) override;
 
-	LPCTSTR EnumTuningSpace(const DWORD dwSpace);
-	LPCTSTR EnumChannelName(const DWORD dwSpace, const DWORD dwChannel);
+	LPCWSTR EnumTuningSpace(const DWORD dwSpace) override;
+	LPCWSTR EnumChannelName(const DWORD dwSpace, const DWORD dwChannel) override;
 
-	const BOOL SetChannel(const DWORD dwSpace, const DWORD dwChannel);
+	const BOOL SetChannel(const DWORD dwSpace, const DWORD dwChannel) override;
 
-	const DWORD GetCurSpace(void);
-	const DWORD GetCurChannel(void);
+	const DWORD GetCurSpace(void) override;
+	const DWORD GetCurChannel(void) override;
 
-	void Release(void);
+	void Release(void) override;
 
 	static CBonTuner * m_pThis;
 	static HINSTANCE m_hModule;
@@ -139,11 +156,12 @@ protected:
 	float m_fBitRate;
 
 	void CalcBitRate();
-	void GetApiChannels(picojson::value *json_array, int service_split);
+	void GetApiChannels(json &json_array, int service_split);
 	DWORD m_dwRecvBytes;
-	DWORD m_dwLastCalcTick;
+	ULONGLONG m_u64LastCalcTick;
 	ULONGLONG m_u64RecvBytes;
 	ULONGLONG m_u64LastCalcByte;
+
 };
 
 #endif // !defined(_BONTUNER_H_)
