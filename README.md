@@ -15,5 +15,32 @@ https://github.com/Chinachu/BonDriver_Mirakurun/releases
 Microsoft公式よりラインタイムのダウンロードおよびインストールを行ってください  
 https://support.microsoft.com/ja-jp/help/2977003/the-latest-supported-visual-c-downloads
 
+## 4K/8K(MMT/TLV)対応
+
+[Mirakurun-BS4K](https://github.com/tsuyopon123/Mirakurun-BS4K)のようにBS4K等のMMT/TLVチャンネルを
+配信するMirakurunフォークに対しても、通常のGR/BS/CSと同じチューナー・同じチャンネル一覧の中から
+シームレスに視聴できます。裏側では[dantto4k](https://github.com/nekohkr/dantto4k)のMMT/TLVデマルチプレクサ・
+ACAS復号・MPEG2-TSリマルチプレクサのコードをgit submodule(`thirdparty/dantto4k`)として取り込み、
+ビルド時に本体へ静的リンクしています(別プロセスやサブプロセスは使いません)。
+
+Mirakurunの`/api/channels`または`/api/services`が返すチャンネルの`type`が`MMT_TYPES`(既定`BS4K`)に
+一致する場合のみ、内部でMMT/TLV→MPEG2-TS変換を行います。それ以外のチャンネル(GR/BS/CSなど)は
+今まで通り生のTSをそのまま返します。
+
+### セットアップ
+
+```
+git submodule update --init --recursive
+```
+
+でdantto4k本体とその依存(asio、tsduck)を取得してからビルドしてください。初回ビルド時にTSDuckの
+静的ライブラリ(`thirdparty/dantto4k/thirdparty/tsduck`)を自動的にビルドします(10分程度)。
+
+この機能はx64ビルドのみ対応です(TSDuckの静的ライブラリをx64向けにしかビルドしていないため)。
+Win32(x86)ビルドではMMT/TLV変換は無効になり、従来通りGR/BS/CS等のTS配信のみ利用できます。
+
+ACAS復号にはローカルのB-CASカードリーダー、またはリモートの
+[CasProxyServer](https://github.com/nekohkr/casproxyserver)が必要です。iniの`[MMT4K]`セクションで設定してください。
+
 ## License
 This software is released under the MIT License, see LICENSE.

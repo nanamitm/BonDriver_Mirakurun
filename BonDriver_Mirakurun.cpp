@@ -45,11 +45,19 @@ std::wstring utf8_to_wstring(const std::u8string& utf8)
 	return std::wstring();
 }
 
+// type名がg_MmtTypesに含まれるか(MMT/TLV=4K/8Kチャンネルかどうか)
+static bool is_mmt_type(const std::string& type)
+{
+	return std::ranges::find(g_MmtTypes, type) != g_MmtTypes.end();
+}
+
 // url 生成
-std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data)
+std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data, bool* pIsMmt = nullptr)
 {
 	std::string url;
-	
+
+
+	if (pIsMmt) *pIsMmt = false;
 
 	if (space < g_SpaceTypes.size() && ch < g_SpaceTypes[space].channel_num)
 	{
@@ -65,15 +73,18 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data)
 				if (type_json.is_string())
 				{
 					std::string type = ch_json["type"].get<std::string>();
+					bool isMmt = is_mmt_type(type);
+					if (pIsMmt) *pIsMmt = isMmt;
+					int effectiveDecode = isMmt ? 0 : decode;
 
 					auto channel_json = ch_json["channel"];
 					if (channel_json.is_string()) // channelは文字列
 					{
-						url = "/api/channels/" + type + "/" + channel_json.get<std::string>() + "/stream?decode=" + std::to_string(decode);
+						url = "/api/channels/" + type + "/" + channel_json.get<std::string>() + "/stream?decode=" + std::to_string(effectiveDecode);
 					}
 				}
 			}
-			else if (ch_json.contains("channel")) // services mode 
+			else if (ch_json.contains("channel")) // services mode
 			{
 				auto channel_detail = ch_json["channel"];
 
@@ -81,6 +92,9 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data)
 				if (type_json.is_string())
 				{
 					std::string type = channel_detail["type"].get<std::string>();
+					bool isMmt = is_mmt_type(type);
+					if (pIsMmt) *pIsMmt = isMmt;
+					int effectiveDecode = isMmt ? 0 : decode;
 
 					auto channel_json = channel_detail["channel"];
 					if (channel_json.is_string()) // channelは文字列
@@ -90,7 +104,7 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data)
 						auto sid_json = ch_json["serviceId"];
 						if (sid_json.is_number())
 						{
-							url = "/api/channels/" + type + "/" + channel + "/services/" + std::to_string(sid_json.get<int>()) + "/stream?decode=" + std::to_string(decode);
+							url = "/api/channels/" + type + "/" + channel + "/services/" + std::to_string(sid_json.get<int>()) + "/stream?decode=" + std::to_string(effectiveDecode);
 						}
 					}
 				}
@@ -128,6 +142,22 @@ static int Init(HMODULE hModule)
 	g_Service_Split = ::GetPrivateProfileIntA("GLOBAL", "SERVICE_SPLIT", 0, g_IniFilePath);
 
 	setlocale(LC_ALL, "japanese");
+
+	{
+		char szMmtTypes[256];
+		::GetPrivateProfileStringA("GLOBAL", "MMT_TYPES", "BS4K", szMmtTypes, _countof(szMmtTypes), g_IniFilePath);
+		g_MmtTypes.clear();
+		char* pCtx = nullptr;
+		for (char* p = strtok_s(szMmtTypes, ",", &pCtx); p; p = strtok_s(nullptr, ",", &pCtx)) {
+			g_MmtTypes.push_back(p);
+		}
+	}
+
+#ifdef ENABLE_MMT4K
+	::GetPrivateProfileStringA("MMT4K", "SMARTCARD_READER_NAME", "", g_Mmt4kSmartCardReaderName, _countof(g_Mmt4kSmartCardReaderName), g_IniFilePath);
+	::GetPrivateProfileStringA("MMT4K", "CASPROXY_SERVER", "", g_Mmt4kCasProxyServer, _countof(g_Mmt4kCasProxyServer), g_IniFilePath);
+	::GetPrivateProfileStringA("MMT4K", "CUSTOM_WINSCARD_DLL", "", g_Mmt4kCustomWinscardDLL, _countof(g_Mmt4kCustomWinscardDLL), g_IniFilePath);
+#endif
 
 	g_MagicPacket_Enable = ::GetPrivateProfileIntA("GLOBAL", "MAGICPACKET_ENABLE", 0, g_IniFilePath);
 
@@ -544,8 +574,8 @@ const BOOL CBonTuner::GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain
 		if (m_pIoGetReq->dwState == IORS_RECV) {
 
 			// データコピー
-			*pdwSize = m_pIoGetReq->dwRxdSize;
-			*ppDst = m_pIoGetReq->RxdBuff;
+			BYTE* pRawData = m_pIoGetReq->RxdBuff;
+			DWORD dwRawSize = m_pIoGetReq->dwRxdSize;
 
 			// バッファ位置を進める
 			::EnterCriticalSection(&m_CriticalSection);
@@ -553,6 +583,22 @@ const BOOL CBonTuner::GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain
 			m_dwReadyReqNum--;
 			*pdwRemain = m_dwReadyReqNum;
 			::LeaveCriticalSection(&m_CriticalSection);
+
+#ifdef ENABLE_MMT4K
+			// MMT/TLV(4K/8K)チャンネルの場合はMmt4kConverterでMPEG2-TSに変換してから返す
+			if (m_bMmtMode && m_pMmt4kConverter) {
+				m_pMmt4kConverter->Push(pRawData, dwRawSize);
+				m_MmtOutputBuffer = m_pMmt4kConverter->TakeOutput();
+
+				*ppDst = m_MmtOutputBuffer.data();
+				*pdwSize = static_cast<DWORD>(m_MmtOutputBuffer.size());
+
+				return TRUE;
+			}
+#endif
+
+			*ppDst = pRawData;
+			*pdwSize = dwRawSize;
 
 			return TRUE;
 		}
@@ -575,6 +621,13 @@ void CBonTuner::PurgeTsStream()
 	m_pIoGetReq = m_pIoPopReq;
 	m_dwReadyReqNum = 0;
 	::LeaveCriticalSection(&m_CriticalSection);
+
+#ifdef ENABLE_MMT4K
+	if (m_bMmtMode && m_pMmt4kConverter) {
+		m_pMmt4kConverter->Reset();
+	}
+	m_MmtOutputBuffer.clear();
+#endif
 }
 
 void CBonTuner::Release()
@@ -849,12 +902,27 @@ const BOOL CBonTuner::SetChannel(const BYTE bCh)
 // チャンネル設定
 const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 {
-	std::string url = make_channel_url(dwSpace, dwChannel, g_DecodeB25, g_Channel_JSON);
+	bool bIsMmt = false;
+	std::string url = make_channel_url(dwSpace, dwChannel, g_DecodeB25, g_Channel_JSON, &bIsMmt);
 
 	if (url.empty()) return FALSE;
 
 	// 一旦クローズ
 	CloseTuner();
+
+#ifdef ENABLE_MMT4K
+	m_bMmtMode = bIsMmt;
+	if (m_bMmtMode) {
+		if (!m_pMmt4kConverter) {
+			m_pMmt4kConverter = std::make_unique<Mmt4kConverter>();
+		}
+		if (!m_pMmt4kConverter->Init(g_Mmt4kSmartCardReaderName, g_Mmt4kCasProxyServer, g_Mmt4kCustomWinscardDLL)) {
+			return FALSE;
+		}
+		m_pMmt4kConverter->Reset();
+	}
+	m_MmtOutputBuffer.clear();
+#endif
 
 	// バッファ確保
 	if (!(m_pIoReqBuff = AllocIoReqBuff(ASYNCBUFFSIZE))) {

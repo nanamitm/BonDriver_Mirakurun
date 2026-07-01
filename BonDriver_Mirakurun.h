@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <memory>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -14,6 +15,7 @@
 #include "IBonDriver2.h"
 #include "binzume\http.h"
 #include "./nlohmann/json.hpp"
+#include "mmt4kConverter.h"
 
 using namespace std;
 using namespace Net;
@@ -61,6 +63,16 @@ static int g_MagicPacket_Enable;
 static char g_MagicPacket_TargetMAC[18];
 static char g_MagicPacket_TargetIP[16];
 #define MAGICPACKET_WAIT_SECONDS 20
+
+// MMT/TLV(4K/8K)チャンネル判定用のtype名リスト(既定:BS4K)。一致するチャンネルは
+// decodeパラメータを常に0にし(サーバー側はMMT/TLVを復号できないため)、
+// GetTsStream内でMmt4kConverterを通してMPEG2-TSに変換してから返す。
+static std::vector<std::string> g_MmtTypes;
+#ifdef ENABLE_MMT4K
+static char g_Mmt4kSmartCardReaderName[256];
+static char g_Mmt4kCasProxyServer[256];
+static char g_Mmt4kCustomWinscardDLL[MAX_PATH];
+#endif
 
 class CBonTuner : public IBonDriver2
 {
@@ -161,6 +173,13 @@ protected:
 	ULONGLONG m_u64LastCalcTick;
 	ULONGLONG m_u64RecvBytes;
 	ULONGLONG m_u64LastCalcByte;
+
+#ifdef ENABLE_MMT4K
+	// 現在選局中のチャンネルがMMT/TLV(4K/8K)かどうか。SetChannelで判定する。
+	bool m_bMmtMode = false;
+	std::unique_ptr<Mmt4kConverter> m_pMmt4kConverter;
+	std::vector<uint8_t> m_MmtOutputBuffer;
+#endif
 
 };
 
