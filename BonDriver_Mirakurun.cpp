@@ -331,6 +331,9 @@ CBonTuner::CBonTuner()
 	// クリティカルセクション初期化
 	::InitializeCriticalSection(&m_CriticalSection);
 	::InitializeCriticalSection(&m_ChannelLock);
+#ifdef ENABLE_MMT4K
+	::InitializeCriticalSection(&m_MmtLock);
+#endif
 
 	//Initialize channel
 	InitChannel();
@@ -344,6 +347,9 @@ CBonTuner::~CBonTuner()
 	// クリティカルセクション削除
 	::DeleteCriticalSection(&m_CriticalSection);
 	::DeleteCriticalSection(&m_ChannelLock);
+#ifdef ENABLE_MMT4K
+	::DeleteCriticalSection(&m_MmtLock);
+#endif
 
 	// Winsock終了
 	if (m_bTunerOpen) {
@@ -576,6 +582,24 @@ void CBonTuner::CloseTuner()
 		m_hPopIoThread = NULL;
 	}
 
+#ifdef ENABLE_MMT4K
+	if (m_hMmtConvertThread) {
+		if (::WaitForSingleObject(m_hMmtConvertThread, 1000) != WAIT_OBJECT_0) {
+			// スレッド強制終了
+#pragma warning(push)
+#pragma warning(disable:6258)
+			::TerminateThread(m_hMmtConvertThread, 0);
+#pragma warning(pop)
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hMmtConvertThread)\n"), TEXT(TUNER_NAME));
+			::OutputDebugString(szDebugOut);
+		}
+
+		::CloseHandle(m_hMmtConvertThread);
+		m_hMmtConvertThread = NULL;
+	}
+#endif
+
 	// イベント開放(両スレッドの終了を待った後なので、SetEvent()との競合は起きない)
 	if (m_hOnStreamEvent) {
 		::CloseHandle(m_hOnStreamEvent);
@@ -668,6 +692,27 @@ const BOOL CBonTuner::GetTsStream(BYTE *pDst, DWORD *pdwSize, DWORD *pdwRemain)
 
 const BOOL CBonTuner::GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain)
 {
+#ifdef ENABLE_MMT4K
+	// MMT/TLV(4K/8K)チャンネルの場合、変換済みTSはMmtConvertThreadが
+	// m_MmtOutputQueueに貯めている。ここでは払い出すだけで、重い
+	// MMT/TLV→TS変換処理自体は行わない(呼び出し元=TVTestの読み出し
+	// スレッドを変換処理でブロックしないため。動きの多いシーン等で
+	// ビットレートが跳ね上がった際のカクつき対策)。
+	if (m_bMmtMode) {
+		::EnterCriticalSection(&m_MmtLock);
+		m_MmtOutputBuffer.swap(m_MmtOutputQueue);
+		m_MmtOutputQueue.clear();
+		const bool bMoreQueued = !m_MmtOutputQueue.empty();
+		::LeaveCriticalSection(&m_MmtLock);
+
+		*ppDst = m_MmtOutputBuffer.data();
+		*pdwSize = static_cast<DWORD>(m_MmtOutputBuffer.size());
+		*pdwRemain = bMoreQueued ? 1UL : 0UL;
+
+		return TRUE;
+	}
+#endif
+
 	if (!m_pIoGetReq) {
 		return FALSE;
 	}
@@ -686,19 +731,6 @@ const BOOL CBonTuner::GetTsStream(BYTE **ppDst, DWORD *pdwSize, DWORD *pdwRemain
 			m_dwReadyReqNum--;
 			*pdwRemain = m_dwReadyReqNum;
 			::LeaveCriticalSection(&m_CriticalSection);
-
-#ifdef ENABLE_MMT4K
-			// MMT/TLV(4K/8K)チャンネルの場合はMmt4kConverterでMPEG2-TSに変換してから返す
-			if (m_bMmtMode && m_pMmt4kConverter) {
-				m_pMmt4kConverter->Push(pRawData, dwRawSize);
-				m_MmtOutputBuffer = m_pMmt4kConverter->TakeOutput();
-
-				*ppDst = m_MmtOutputBuffer.data();
-				*pdwSize = static_cast<DWORD>(m_MmtOutputBuffer.size());
-
-				return TRUE;
-			}
-#endif
 
 			*ppDst = pRawData;
 			*pdwSize = dwRawSize;
@@ -726,9 +758,14 @@ void CBonTuner::PurgeTsStream()
 	::LeaveCriticalSection(&m_CriticalSection);
 
 #ifdef ENABLE_MMT4K
+	// MmtConvertThreadが動作中の可能性があるため、m_pMmt4kConverterへの
+	// アクセスはm_MmtLockで排他する
+	::EnterCriticalSection(&m_MmtLock);
 	if (m_bMmtMode && m_pMmt4kConverter) {
 		m_pMmt4kConverter->Reset();
 	}
+	m_MmtOutputQueue.clear();
+	::LeaveCriticalSection(&m_MmtLock);
 	m_MmtOutputBuffer.clear();
 #endif
 }
@@ -908,6 +945,59 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 	return 0;
 }
 
+#ifdef ENABLE_MMT4K
+// MMT/TLV(4K/8K)チャンネル専用: 生の受信データを消費してMMT/TLV→TS変換を行い、
+// 結果をm_MmtOutputQueueに貯める。この重い変換処理(MMT/TLVデマルチプレクス・
+// ACAS復号・TS再多重化)をGetTsStream()の呼び出し元(TVTestの読み出しスレッド)
+// から切り離すことで、動きの多いシーン等でビットレートが跳ね上がった際に
+// TVTest側の読み出しがブロックされてカクつくのを防ぐ。
+DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
+{
+	CBonTuner *pThis = (CBonTuner *)pParam;
+
+	while (pThis->m_bLoopIoThread) {
+
+		// 生データを1コマ取り出す(GetTsStream()と同じリング操作)。
+		// スロットの内容はロック区間内でローカルバッファへコピーしてから使う。
+		// (ロック解放後だと、そのスロットはPushIoThreadに再利用され得るため、
+		//  ポインタを外へ持ち出したまま参照するとデータ競合になる)
+		BYTE localBuf[TSDATASIZE];
+		DWORD dwRawSize = 0;
+		bool bGot = false;
+
+		::EnterCriticalSection(&pThis->m_CriticalSection);
+		if (pThis->m_dwReadyReqNum && pThis->m_pIoGetReq && pThis->m_pIoGetReq->dwState == IORS_RECV) {
+			dwRawSize = pThis->m_pIoGetReq->dwRxdSize;
+			if (dwRawSize) {
+				::CopyMemory(localBuf, pThis->m_pIoGetReq->RxdBuff, dwRawSize);
+			}
+			pThis->m_pIoGetReq = pThis->m_pIoGetReq->pNext;
+			pThis->m_dwReadyReqNum--;
+			bGot = true;
+		}
+		::LeaveCriticalSection(&pThis->m_CriticalSection);
+
+		if (!bGot) {
+			::Sleep(1);
+			continue;
+		}
+
+		// MMT/TLV→TS変換(重い処理はここに隔離する)
+		::EnterCriticalSection(&pThis->m_MmtLock);
+		if (pThis->m_pMmt4kConverter) {
+			pThis->m_pMmt4kConverter->Push(localBuf, dwRawSize);
+			std::vector<uint8_t> out = pThis->m_pMmt4kConverter->TakeOutput();
+			if (!out.empty()) {
+				pThis->m_MmtOutputQueue.insert(pThis->m_MmtOutputQueue.end(), out.begin(), out.end());
+			}
+		}
+		::LeaveCriticalSection(&pThis->m_MmtLock);
+	}
+
+	return 0;
+}
+#endif
+
 const BOOL CBonTuner::PushIoRequest(SOCKET sock)
 {
 	// ドライバに非同期リクエストを発行する
@@ -1039,6 +1129,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		}
 		m_pMmt4kConverter->Reset();
 	}
+	m_MmtOutputQueue.clear();
 	m_MmtOutputBuffer.clear();
 #endif
 
@@ -1137,8 +1228,19 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		DWORD dwPushIoThreadID = 0UL, dwPopIoThreadID = 0UL;
 		m_hPushIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PushIoThread, this, CREATE_SUSPENDED, &dwPopIoThreadID);
 		m_hPopIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PopIoThread, this, CREATE_SUSPENDED, &dwPushIoThreadID);
+#ifdef ENABLE_MMT4K
+		// MMT/TLV(4K/8K)チャンネルの場合のみ、変換専用スレッドを起動する
+		DWORD dwMmtConvertThreadID = 0UL;
+		if (m_bMmtMode) {
+			m_hMmtConvertThread = ::CreateThread(NULL, 0UL, CBonTuner::MmtConvertThread, this, CREATE_SUSPENDED, &dwMmtConvertThreadID);
+		}
+#endif
 
-		if (!m_hPushIoThread || !m_hPopIoThread) {
+		if (!m_hPushIoThread || !m_hPopIoThread
+#ifdef ENABLE_MMT4K
+			|| (m_bMmtMode && !m_hMmtConvertThread)
+#endif
+			) {
 			if (m_hPushIoThread) {
 #pragma warning(push)
 #pragma warning(disable:6258)
@@ -1158,6 +1260,17 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 				m_hPopIoThread = NULL;
 			}
 
+#ifdef ENABLE_MMT4K
+			if (m_hMmtConvertThread) {
+#pragma warning(push)
+#pragma warning(disable:6258)
+				::TerminateThread(m_hMmtConvertThread, 0UL);
+#pragma warning(pop)
+				::CloseHandle(m_hMmtConvertThread);
+				m_hMmtConvertThread = NULL;
+			}
+#endif
+
 			throw 3UL;
 		}
 
@@ -1166,6 +1279,11 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		if (::ResumeThread(m_hPushIoThread) == 0xFFFFFFFFUL || ::ResumeThread(m_hPopIoThread) == 0xFFFFFFFFUL) {
 			throw 4UL;
 		}
+#ifdef ENABLE_MMT4K
+		if (m_hMmtConvertThread && ::ResumeThread(m_hMmtConvertThread) == 0xFFFFFFFFUL) {
+			throw 4UL;
+		}
+#endif
 
 		// ミューテックス作成
 		if (!(m_hMutex = ::CreateMutex(NULL, TRUE, MUTEX_NAME))) {

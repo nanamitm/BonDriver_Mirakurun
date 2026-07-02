@@ -138,6 +138,10 @@ protected:
 	const BOOL PushIoRequest(SOCKET sock);
 	const BOOL PopIoRequest(SOCKET sock);
 
+#ifdef ENABLE_MMT4K
+	static DWORD WINAPI MmtConvertThread(LPVOID pParam);
+#endif
+
 	bool m_bTunerOpen;
 
 	HANDLE m_hMutex;
@@ -180,7 +184,15 @@ protected:
 	// 現在選局中のチャンネルがMMT/TLV(4K/8K)かどうか。SetChannelで判定する。
 	bool m_bMmtMode = false;
 	std::unique_ptr<Mmt4kConverter> m_pMmt4kConverter;
+
+	// MmtConvertThreadが生の受信データをMMT/TLV→TS変換し、ここに貯める。
+	// GetTsStream()はこれを払い出すだけで、重い変換処理自体は行わない
+	// (呼び出し元=TVTestの読み出しスレッドを変換処理でブロックしないため)。
+	// m_pMmt4kConverter・m_MmtOutputQueueへのアクセスはm_MmtLockで排他する。
+	std::vector<uint8_t> m_MmtOutputQueue;
 	std::vector<uint8_t> m_MmtOutputBuffer;
+	CRITICAL_SECTION m_MmtLock;
+	HANDLE m_hMmtConvertThread = NULL;
 #endif
 
 };
