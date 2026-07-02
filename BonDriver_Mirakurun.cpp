@@ -516,13 +516,9 @@ void CBonTuner::CloseTuner()
 		::CancelIoEx((HANDLE)m_sock, NULL);
 	}
 
-	// イベント開放
-	if (m_hOnStreamEvent) {
-		::CloseHandle(m_hOnStreamEvent);
-		m_hOnStreamEvent = NULL;
-	}
-
 	// スレッド終了
+	// (PopIoThreadはm_hOnStreamEventにSetEvent()するため、そのハンドルは
+	//  スレッドが完全に終了した後でなければ閉じてはならない)
 	if (m_hPushIoThread) {
 		if (::WaitForSingleObject(m_hPushIoThread, 1000) != WAIT_OBJECT_0) {
 			// スレッド強制終了
@@ -554,6 +550,12 @@ void CBonTuner::CloseTuner()
 
 		::CloseHandle(m_hPopIoThread);
 		m_hPopIoThread = NULL;
+	}
+
+	// イベント開放(両スレッドの終了を待った後なので、SetEvent()との競合は起きない)
+	if (m_hOnStreamEvent) {
+		::CloseHandle(m_hOnStreamEvent);
+		m_hOnStreamEvent = NULL;
 	}
 
 	// バッファ開放
