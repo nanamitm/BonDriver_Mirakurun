@@ -16,9 +16,8 @@
 
 // FIFOバッファ設定
 // 8K(MMT/TLV)チャンネルはGR/BS/BS4Kより実効ビットレートがかなり高いため、
-// 想定ピークレートを128Mbps相当に引き上げてバッファ長2秒分を確保する
-// (以前は16Mbps想定で、8K視聴時にリングが数百ms程度で埋まってしまっていた)
-#define ASYNCBUFFTIME		2											// バッファ長 = 2秒
+// 想定ピークレートを128Mbps相当に引き上げ、バッファ長も8秒分に増やした
+#define ASYNCBUFFTIME		8											// バッファ長 = 8秒
 #define ASYNCBUFF_ASSUMED_BPS	( 128 * 1024 * 1024 / 8 )				// 想定ピークレート(バイト/秒) = 128Mbps
 #define ASYNCBUFFSIZE		( ASYNCBUFF_ASSUMED_BPS / TSDATASIZE * ASYNCBUFFTIME )
 
