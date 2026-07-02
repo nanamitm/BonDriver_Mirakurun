@@ -26,6 +26,13 @@
 #define IORS_BUSY			0x01			// リクエスト受信中
 #define IORS_RECV			0x02			// 受信完了、ストア待ち
 
+// チャンネル切替時のサーバー接続リトライ設定
+// (直前のチャンネルの旧接続がサーバー側でまだ解放されておらず、
+//  同一優先度の新規ストリーム要求が一時的に拒否されるケースを吸収する)
+#define CHANNEL_CONNECT_RETRY_MAX		5				// 最大リトライ回数
+#define CHANNEL_CONNECT_RETRY_WAIT_MS	250				// リトライ間隔(ms)
+#define HTTP_STATUS_TIMEOUT_MS			5000			// HTTPステータス受信タイムアウト(ms)
+
 
 //////////////////////////////////////////////////////////////////////
 // Tools
@@ -117,6 +124,53 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data, bool
 	::OutputDebugStringA(szDebugOut);
 #endif
 	return url;
+}
+
+// HTTPレスポンスのステータスコードを取得する
+// (ヘッダ終端(\r\n\r\n)まで読み捨てる。ヘッダ以降に読み過ぎたTSデータは破棄するが、
+//  ストリームは継続しているため後続のWSARecvで問題なく続きを受信できる)
+// 戻り値: ステータスラインの受信・パースに成功したらtrue、タイムアウトや切断ならfalse
+static bool RecvHttpStatusCode(SOCKET sock, int &statusCode, DWORD dwTimeoutMs)
+{
+	statusCode = 0;
+
+	DWORD dwOldTimeout = 0;
+	int nOldTimeoutLen = sizeof(dwOldTimeout);
+	::getsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&dwOldTimeout, &nOldTimeoutLen);
+	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwTimeoutMs, sizeof(dwTimeoutMs));
+
+	std::string header;
+	char buf[4096];
+	bool bFoundEnd = false;
+
+	// ヘッダ終端が見つかるまで受信する(異常に長いヘッダは打ち切る)
+	while (header.size() < 16384) {
+		int n = recv(sock, buf, sizeof(buf), 0);
+		if (n <= 0) {
+			break;
+		}
+		header.append(buf, n);
+		if (header.find("\r\n\r\n") != std::string::npos) {
+			bFoundEnd = true;
+			break;
+		}
+	}
+
+	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwOldTimeout, sizeof(dwOldTimeout));
+
+	if (!bFoundEnd) {
+		return false;
+	}
+
+	// ステータスライン("HTTP/1.1 200 OK")をパース
+	size_t space1 = header.find(' ');
+	if (space1 == std::string::npos) {
+		return false;
+	}
+
+	statusCode = atoi(header.c_str() + space1 + 1);
+
+	return statusCode != 0;
 }
 
 
@@ -443,6 +497,21 @@ void CBonTuner::CloseTuner()
 	// スレッド終了要求セット
 	m_bLoopIoThread = FALSE;
 
+	// サーバーへの切断通知を最優先で行う
+	// (スレッド終了やハンドル開放より前にshutdown()でFINを即座に送出することで、
+	//  万一スレッド終了処理が詰まった場合でも、サーバー側には速やかに切断が伝わるようにする。
+	//  また、未読の受信データが残った状態でいきなりclosesocket()するとRSTが送出され
+	//  サーバー側が切断を検知できないことがあるため、先に正常なshutdown()を行う)
+	if (m_sock != INVALID_SOCKET) {
+		::shutdown(m_sock, SD_BOTH);
+
+		// 保留中の非同期WSARecvを強制キャンセルし、Push/PopIoThreadが速やかに
+		// ループを抜けられるようにする(TerminateThreadでの強制終了は
+		// Winsock内部状態を破壊しソケットが正しく閉じられなくなる恐れがあるため、
+		// できる限り使わずに済むようにする)
+		::CancelIoEx((HANDLE)m_sock, NULL);
+	}
+
 	// イベント開放
 	if (m_hOnStreamEvent) {
 		::CloseHandle(m_hOnStreamEvent);
@@ -495,7 +564,11 @@ void CBonTuner::CloseTuner()
 
 	// ソケットクローズ
 	if (m_sock != INVALID_SOCKET) {
-		closesocket(m_sock);
+		if (closesocket(m_sock) == SOCKET_ERROR) {
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() closesocket error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
+			::OutputDebugString(szDebugOut);
+		}
 		m_sock = INVALID_SOCKET;
 	}
 
@@ -939,50 +1012,75 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	try{
 		std::string serverRequest = "GET " + url +" HTTP/1.0\r\nX-Mirakurun-Priority: " + std::to_string(g_Priority) + "\r\n\r\n";
 
-		struct addrinfo hints;
-		struct addrinfo* res = NULL;
-		struct addrinfo* ai;
+		// サーバー側で直前のチャンネルの旧接続がまだ解放されておらず、
+		// 同一優先度の新規ストリーム要求が一時的に拒否される(200以外が返る)ことがあるため、
+		// 失敗時は少し待ってリトライする
+		int httpStatus = 0;
+		for (int attempt = 1; attempt <= CHANNEL_CONNECT_RETRY_MAX; attempt++) {
+			struct addrinfo hints;
+			struct addrinfo* res = NULL;
+			struct addrinfo* ai;
 
-		memset(&hints, 0, sizeof(hints));
-		hints.ai_family = AF_INET6;	//IPv6優先
-		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_protocol = IPPROTO_TCP;
-		hints.ai_flags = AI_NUMERICSERV;
-		if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
-			//printf("getaddrinfo(): %s\n", gai_strerror(err));
-			hints.ai_family = AF_INET;	//IPv4限定
+			memset(&hints, 0, sizeof(hints));
+			hints.ai_family = AF_INET6;	//IPv6優先
+			hints.ai_socktype = SOCK_STREAM;
+			hints.ai_protocol = IPPROTO_TCP;
+			hints.ai_flags = AI_NUMERICSERV;
 			if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
+				//printf("getaddrinfo(): %s\n", gai_strerror(err));
+				hints.ai_family = AF_INET;	//IPv4限定
+				if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
+					throw 1UL;
+				}
+			}
+
+			for (ai = res; ai; ai = ai->ai_next) {
+				m_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+				if (m_sock == INVALID_SOCKET) {
+					continue;
+				}
+
+				if (connect(m_sock, ai->ai_addr, (int)ai->ai_addrlen) >= 0) {
+					// OK
+					break;
+				}
+				closesocket(m_sock);
+				m_sock = INVALID_SOCKET;
+			}
+			freeaddrinfo(res);
+
+			if (m_sock == INVALID_SOCKET) {
+				TCHAR szDebugOut[128];
+				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() connection error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
+				::OutputDebugString(szDebugOut);
 				throw 1UL;
 			}
-		}
 
-		for (ai = res; ai; ai = ai->ai_next) {
-			m_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-			if (m_sock == INVALID_SOCKET) {
-				continue;
+			if (send(m_sock, serverRequest.c_str(), (int)serverRequest.length(), 0) < 0) {
+				TCHAR szDebugOut[128];
+				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() send error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
+				::OutputDebugString(szDebugOut);
+				throw 1UL;
 			}
 
-			if (connect(m_sock, ai->ai_addr, (int)ai->ai_addrlen) >= 0) {
-				// OK
+			// レスポンスのステータスコードを確認する
+			// (チューナー未解放等により200以外が返る場合はリトライする)
+			if (RecvHttpStatusCode(m_sock, httpStatus, HTTP_STATUS_TIMEOUT_MS) && httpStatus == 200) {
 				break;
 			}
+
+			TCHAR szDebugOut[192];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::SetChannel() http status = %d (attempt %d/%d)\n"), TEXT(TUNER_NAME), httpStatus, attempt, CHANNEL_CONNECT_RETRY_MAX);
+			::OutputDebugString(szDebugOut);
+
 			closesocket(m_sock);
 			m_sock = INVALID_SOCKET;
-		}
-		freeaddrinfo(res);
 
-		if (m_sock == INVALID_SOCKET) {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() connection error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
-			::OutputDebugString(szDebugOut);
-			throw 1UL;
-		}
+			if (attempt == CHANNEL_CONNECT_RETRY_MAX) {
+				throw 6UL;
+			}
 
-		if (send(m_sock, serverRequest.c_str(), (int)serverRequest.length(), 0) < 0) {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() send error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
-			::OutputDebugString(szDebugOut);
-			throw 1UL;
+			::Sleep(CHANNEL_CONNECT_RETRY_WAIT_MS);
 		}
 
 		// イベント作成
