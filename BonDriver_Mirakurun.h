@@ -142,7 +142,9 @@ protected:
 
 	HANDLE m_hMutex;
 
-	BYTE m_RxdBuff[256];
+	// SetChannel()/CloseTuner()の多重・再入呼び出しに対する排他制御
+	// (同一スレッドからの再入はCRITICAL_SECTIONの性質上ブロックしない)
+	CRITICAL_SECTION m_ChannelLock;
 
 	AsyncIoReq *m_pIoReqBuff;
 	AsyncIoReq *m_pIoPushReq;

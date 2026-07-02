@@ -37,6 +37,19 @@
 //////////////////////////////////////////////////////////////////////
 // Tools
 //////////////////////////////////////////////////////////////////////
+
+// CRITICAL_SECTIONのRAIIガード(途中returnの多い関数でも確実にLeaveする)
+class CAutoLock
+{
+public:
+	explicit CAutoLock(CRITICAL_SECTION &cs) : m_cs(cs) { ::EnterCriticalSection(&m_cs); }
+	~CAutoLock() { ::LeaveCriticalSection(&m_cs); }
+	CAutoLock(const CAutoLock &) = delete;
+	CAutoLock &operator=(const CAutoLock &) = delete;
+private:
+	CRITICAL_SECTION &m_cs;
+};
+
 // u8string -> wstring
 std::wstring utf8_to_wstring(const std::u8string& utf8)
 {
@@ -313,6 +326,7 @@ CBonTuner::CBonTuner()
 
 	// クリティカルセクション初期化
 	::InitializeCriticalSection(&m_CriticalSection);
+	::InitializeCriticalSection(&m_ChannelLock);
 
 	//Initialize channel
 	InitChannel();
@@ -325,6 +339,7 @@ CBonTuner::~CBonTuner()
 
 	// クリティカルセクション削除
 	::DeleteCriticalSection(&m_CriticalSection);
+	::DeleteCriticalSection(&m_ChannelLock);
 
 	// Winsock終了
 	if (m_bTunerOpen) {
@@ -498,6 +513,11 @@ const BOOL CBonTuner::OpenTuner()
 
 void CBonTuner::CloseTuner()
 {
+	// SetChannel()/CloseTuner()の多重呼び出しを排他する
+	// (同一スレッドからSetChannel()経由で再入した場合はCRITICAL_SECTIONの
+	//  性質上ブロックしない)
+	CAutoLock lock(m_ChannelLock);
+
 	// スレッド終了要求セット
 	m_bLoopIoThread = FALSE;
 
@@ -981,6 +1001,10 @@ const BOOL CBonTuner::SetChannel(const BYTE bCh)
 // チャンネル設定
 const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 {
+	// SetChannel()の多重呼び出しを排他する(内部で呼ぶCloseTuner()は同一
+	// スレッドからの再入になるためブロックしない)
+	CAutoLock lock(m_ChannelLock);
+
 	bool bIsMmt = false;
 	std::string url = make_channel_url(dwSpace, dwChannel, g_DecodeB25, g_Channel_JSON, &bIsMmt);
 
