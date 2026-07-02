@@ -1,0 +1,49 @@
+name: Build x64 Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build (Release|x64)
+        run: msbuild BonDriver_Mirakurun.sln /p:Configuration=Release /p:Platform=x64 /m
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "x64\Release\BonDriver_Mirakurun.dll" $dist
+          Copy-Item "BonDriver_Mirakurun.ini" $dist
+          Copy-Item "README.md" $dist
+          Copy-Item "LICENSE" $dist
+          Compress-Archive -Path "$dist\*" -DestinationPath "BonDriver_Mirakurun_x64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BonDriver_Mirakurun_x64
+          path: BonDriver_Mirakurun_x64.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BonDriver_Mirakurun_x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
