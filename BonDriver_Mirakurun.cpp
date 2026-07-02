@@ -15,8 +15,12 @@
 #define MUTEX_NAME			TEXT(TUNER_NAME)
 
 // FIFOバッファ設定
+// 8K(MMT/TLV)チャンネルはGR/BS/BS4Kより実効ビットレートがかなり高いため、
+// 想定ピークレートを128Mbps相当に引き上げてバッファ長2秒分を確保する
+// (以前は16Mbps想定で、8K視聴時にリングが数百ms程度で埋まってしまっていた)
 #define ASYNCBUFFTIME		2											// バッファ長 = 2秒
-#define ASYNCBUFFSIZE		( 0x200000 / TSDATASIZE * ASYNCBUFFTIME )	// 平均16Mbpsとする
+#define ASYNCBUFF_ASSUMED_BPS	( 128 * 1024 * 1024 / 8 )				// 想定ピークレート(バイト/秒) = 128Mbps
+#define ASYNCBUFFSIZE		( ASYNCBUFF_ASSUMED_BPS / TSDATASIZE * ASYNCBUFFTIME )
 
 #define REQRESERVNUM		8				// 非同期リクエスト予約数 //before 16
 #define REQPOLLINGWAIT		20				// 非同期リクエストポーリング間隔(ms) //before 10
@@ -852,8 +856,15 @@ DWORD WINAPI CBonTuner::PushIoThread(LPVOID pParam)
 	// ドライバにTSデータリクエストを発行する
 	while (pThis->m_bLoopIoThread) {
 
-		// リクエスト処理待ちが規定未満なら追加する
-		if (pThis->m_dwBusyReqNum < REQRESERVNUM) {
+		// リクエスト処理待ちが規定未満、かつリング全体(処理待ち+ストア待ち)が
+		// まだ満杯でない場合のみ追加する。
+		// (busy+readyがASYNCBUFFSIZEに達している状態で追加すると、m_pIoPushReqが
+		//  指す先はGetTsStream()でまだ読まれていない(IORS_RECVの)スロットであり、
+		//  そこへ新規WSARecvを発行すると未読データを上書き破壊してしまう。
+		//  消費側が追いつかない場合はここで待たせ、TCPの受信バッファ側に
+		//  自然にバックプレッシャーをかける)
+		if (pThis->m_dwBusyReqNum < REQRESERVNUM &&
+			(pThis->m_dwBusyReqNum + pThis->m_dwReadyReqNum) < ASYNCBUFFSIZE) {
 
 			// ドライバにTSデータリクエストを発行する(HTTPなので受信要求のみ)
 			if (!pThis->PushIoRequest(pThis->m_sock)) {
@@ -862,7 +873,7 @@ DWORD WINAPI CBonTuner::PushIoThread(LPVOID pParam)
 			}
 
 		} else {
-			// リクエスト処理待ちがフルの場合はウェイト
+			// リクエスト処理待ちがフル、またはリングが満杯の場合はウェイト
 			::Sleep(REQPOLLINGWAIT);
 		}
 	}
