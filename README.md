@@ -3,16 +3,13 @@
 TVTestから[Mirakurun](https://github.com/kanreisa/Mirakurun)を利用する為のBonDriverです。
 
 ソースコードのベースはBonDriver_HTTPからです。  
-Visual Studio Community 2015 でビルド、TVTest 0.9.0-dev(x64) の環境で動作確認しております。
-
-## ビルド済みDLL
-不定期に(作者的に)安定版DLLはこちらにアップロードしております  
-https://github.com/Chinachu/BonDriver_Mirakurun/releases
+Visual Studio 2022 (v143ツールセット) でビルドしています。x64/Win32いずれの構成もビルド可能ですが、
+4K/8K(MMT/TLV)対応はx64ビルドのみです(詳細は後述)。
 
 ## ランタイム
-[Microsoft Visual C++ 2015 Redistrebutable]を必要とします  
+[Microsoft Visual C++ 2015-2022 Redistributable]を必要とします  
 
-Microsoft公式よりラインタイムのダウンロードおよびインストールを行ってください  
+Microsoft公式よりランタイムのダウンロードおよびインストールを行ってください  
 https://support.microsoft.com/ja-jp/help/2977003/the-latest-supported-visual-c-downloads
 
 ## 4K/8K(MMT/TLV)対応
