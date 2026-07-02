@@ -1,6 +1,3 @@
-[submodule "picojson"]
-	path = picojson
-	url = https://github.com/kazuho/picojson
 [submodule "thirdparty/dantto4k"]
 	path = thirdparty/dantto4k
 	url = https://github.com/nanamitm/dantto4k.git
