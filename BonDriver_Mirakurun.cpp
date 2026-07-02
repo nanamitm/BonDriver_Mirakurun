@@ -366,16 +366,20 @@ void CBonTuner::InitChannel()
 			}
 		}
 
-		if (type_name.empty()) return;
-
-		auto it = std::ranges::find_if(g_SpaceTypes, [&](auto& e) { return e.name == type_name; });
-		if (it != g_SpaceTypes.end())
+		// typeが取得できないチャンネルは空間に含めずスキップする(elem_numは
+		// g_Channel_JSON内の実インデックスと対応させる必要があるため、
+		// スキップした場合も必ずインクリメントする)
+		if (!type_name.empty())
 		{
-			(*it).channel_num++;
-		}
-		else// 同チューナ空間名が見つからない場合要素を追加
-		{
-			g_SpaceTypes.push_back(TSpaceType{ type_name, elem_num, 1 });
+			auto it = std::ranges::find_if(g_SpaceTypes, [&](auto& e) { return e.name == type_name; });
+			if (it != g_SpaceTypes.end())
+			{
+				(*it).channel_num++;
+			}
+			else// 同チューナ空間名が見つからない場合要素を追加
+			{
+				g_SpaceTypes.push_back(TSpaceType{ type_name, elem_num, 1 });
+			}
 		}
 		elem_num++;
 	}
