@@ -887,6 +887,10 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 				// エラー発生
 				break;
 			}
+		} else {
+			// 処理待ちリクエストがない間はビジーループにせず、CPUコアの
+			// 占有を避ける(応答性を保つため短い間隔にする)
+			::Sleep(1);
 		}
 	}
 
