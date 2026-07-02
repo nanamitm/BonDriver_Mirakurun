@@ -6,15 +6,47 @@
 #include "acasHandler.h"
 #include "casProxy.h"
 #include "config.h"
+#include "demuxerTeeHandler.h"
 #include "mmtTlvDemuxer.h"
+#include "mmtsRecorder.h"
 #include "remuxerHandler.h"
 #include "smartCard.h"
 #include "stream.h"
+
+namespace {
+
+// Feeds MFU/MPT events to MmtsRecorder so its .mmtsmap sidecar (track/seek-point
+// index) stays in sync with whatever gets saved via StartMmtsRecording(), without
+// disturbing the existing RemuxerHandler -> MPEG2-TS output path.
+class MmtsRecordingTapHandler : public MmtTlv::DemuxerHandler
+{
+public:
+	void onVideoData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
+	{
+		MmtsRecorder::OnVideoData(stream, mfu);
+	}
+	void onAudioData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
+	{
+		MmtsRecorder::OnAudioData(stream, mfu);
+	}
+	void onSubtitleData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
+	{
+		MmtsRecorder::OnSubtitleData(stream, mfu);
+	}
+	void onMpt(const MmtTlv::Mpt& mpt) override
+	{
+		MmtsRecorder::OnMpt(mpt);
+	}
+};
+
+} // namespace
 
 struct Mmt4kConverter::Impl
 {
 	MmtTlv::MmtTlvDemuxer demuxer;
 	RemuxerHandler handler{ demuxer };
+	MmtsRecordingTapHandler recordingTapHandler;
+	MmtTlv::DemuxerTeeHandler teeHandler{ handler, recordingTapHandler };
 	std::vector<uint8_t> inputBuffer;
 	std::vector<uint8_t> remuxOutput;
 
@@ -25,7 +57,15 @@ struct Mmt4kConverter::Impl
 				remuxOutput.insert(remuxOutput.end(), data, data + size);
 			}
 		});
-		demuxer.setDemuxerHandler(handler);
+		demuxer.setDemuxerHandler(teeHandler);
+		// While StartMmtsRecording() is active, feed each decoded (ACAS-decrypted)
+		// TLV packet straight to MmtsRecorder, same as dantto4k + Write_MMTS do.
+		demuxer.setDecodedDumpCallback([](const uint8_t* data, size_t size) {
+			MmtsRecorder::WriteDecoded(data, size);
+		});
+		demuxer.setDecodedDumpErrorCallback([]() {
+			MmtsRecorder::MarkDecodeFailure();
+		});
 	}
 };
 

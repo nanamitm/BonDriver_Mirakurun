@@ -282,6 +282,9 @@ if not exist "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\bin\$(Configur
     <ClCompile Include="thirdparty\dantto4k\src\ddmt.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\demuxerTeeHandler.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\ecm.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
@@ -418,6 +421,12 @@ if not exist "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\bin\$(Configur
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\mmtp.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\mmtsMapWriter.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\mmtsRecorder.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\mpt.cpp">

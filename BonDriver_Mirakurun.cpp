@@ -3,6 +3,10 @@
 
 #include "BonDriver_Mirakurun.h"
 
+#ifdef ENABLE_MMT4K
+#include "mmtsRecorder.h"
+#endif
+
 #pragma comment(lib, "ws2_32.lib")
 
 //////////////////////////////////////////////////////////////////////
@@ -296,6 +300,53 @@ extern "C" __declspec(dllexport) IBonDriver * CreateBonDriver()
 	// スタンス生成(既存の場合はインスタンスのポインタを返す)
 	return (CBonTuner::m_pThis)? CBonTuner::m_pThis : ((IBonDriver *) new CBonTuner);
 }
+
+#ifdef ENABLE_MMT4K
+//////////////////////////////////////////////////////////////////////
+// MMTS保存 (Write_MMTSプラグインからの呼び出し用エクスポート)
+// dantto4kが公開しているものと同一シグネチャ。EDCBがWrite_MMTSプラグインと
+// 本DLLを同一プロセスにロードしている場合、MMT/TLV(4K/8K)チャンネルの
+// 受信streamを復号(ACASデスクランブル解除)のみ行ったままの.mmtsとして直接保存する。
+//////////////////////////////////////////////////////////////////////
+
+extern "C" __declspec(dllexport) BOOL WINAPI StartMmtsRecording(const wchar_t* path, BOOL overwrite, DWORD* sessionId)
+{
+	if (sessionId == nullptr) {
+		return FALSE;
+	}
+	uint32_t id = 0;
+	if (!MmtsRecorder::Start(path, overwrite != FALSE, &id)) {
+		return FALSE;
+	}
+	*sessionId = id;
+	return TRUE;
+}
+
+extern "C" __declspec(dllexport) void WINAPI StopMmtsRecording(DWORD sessionId)
+{
+	MmtsRecorder::Stop(sessionId);
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI GetMmtsRecordingStatus(DWORD sessionId, DWORD* actualMode, BOOL* failed, BOOL* fallbackUsed)
+{
+	uint32_t mode = 0;
+	bool statusFailed = false;
+	bool statusFallbackUsed = false;
+	if (!MmtsRecorder::GetStatus(sessionId, &mode, &statusFailed, &statusFallbackUsed)) {
+		return FALSE;
+	}
+	if (actualMode) {
+		*actualMode = mode;
+	}
+	if (failed) {
+		*failed = statusFailed ? TRUE : FALSE;
+	}
+	if (fallbackUsed) {
+		*fallbackUsed = statusFallbackUsed ? TRUE : FALSE;
+	}
+	return TRUE;
+}
+#endif // ENABLE_MMT4K
 
 
 //////////////////////////////////////////////////////////////////////
