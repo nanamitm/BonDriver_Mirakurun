@@ -72,11 +72,12 @@ struct Mmt4kConverter::Impl
 Mmt4kConverter::Mmt4kConverter() : impl(std::make_unique<Impl>()) {}
 Mmt4kConverter::~Mmt4kConverter() = default;
 
-bool Mmt4kConverter::Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL)
+bool Mmt4kConverter::Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL, bool convertResolutionGaiji)
 {
 	config.smartCardReaderName = smartCardReaderName;
 	config.casProxyServer = casProxyServer;
 	config.customWinscardDLL = customWinscardDLL;
+	config.convertResolutionGaiji = convertResolutionGaiji;
 
 	try {
 		auto acasHandler = std::make_unique<AcasHandler>();

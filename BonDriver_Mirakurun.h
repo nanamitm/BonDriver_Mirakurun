@@ -72,6 +72,7 @@ static std::vector<std::string> g_MmtTypes;
 static char g_Mmt4kSmartCardReaderName[256];
 static char g_Mmt4kCasProxyServer[256];
 static char g_Mmt4kCustomWinscardDLL[MAX_PATH];
+static int g_Mmt4kConvertResolutionGaiji;
 #endif
 
 class CBonTuner : public IBonDriver2

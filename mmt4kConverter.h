@@ -20,7 +20,8 @@ public:
 	// smartCardReaderName/casProxyServer/customWinscardDLL mirror dantto4k.ini's [acas]
 	// section. casProxyServer empty => use a local PC/SC reader; otherwise "host:port"
 	// of a CasProxyServer (see https://github.com/nekohkr/casproxyserver).
-	bool Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL);
+	// convertResolutionGaiji mirrors dantto4k.ini's [epg] convertResolutionGaiji.
+	bool Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL, bool convertResolutionGaiji);
 
 	// Feed raw MMT/TLV bytes received over HTTP. Converted MPEG2-TS bytes accumulate
 	// internally; drain them with TakeOutput().
