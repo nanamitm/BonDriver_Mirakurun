@@ -33,19 +33,17 @@
 #define IORS_BUSY			0x01			// リクエスト受信中
 #define IORS_RECV			0x02			// 受信完了、ストア待ち
 
-// チャンネル切替時のサーバー接続リトライ設定
-// (直前のチャンネルの旧接続がサーバー側でまだ解放されておらず、
-//  同一優先度の新規ストリーム要求が一時的に拒否されるケースを吸収する)
-#define CHANNEL_CONNECT_RETRY_MAX		5				// 最大リトライ回数
-#define CHANNEL_CONNECT_RETRY_WAIT_MS	250				// リトライ間隔(ms)
 // サーバー(Mirakurun)がチューナーを同一デバイスで使い回す場合、新チャンネルの
-// 応答を返す前に旧プロセスの終了待ち(SIGTERM後最大6秒)+解放遅延(最大1秒)を
-// 同期的に行うことがある。この間サーバーは接続を保持したまま無応答になるだけで
-// 拒否したわけではないため、ここで短く見切って新規接続を張り直すと、サーバー側
-// では前の要求が中断されたと判断されて後始末が再度走り、かえって遅延が増える
-// (BS4Kのチャンネルスキャンがタイムアウトする一因になっていた)。
-// そのため、旧接続解放の最悪ケースより長く待ってから初めてリトライするようにする。
-#define HTTP_STATUS_TIMEOUT_MS			8000			// HTTPステータス受信タイムアウト(ms)
+// 応答を返す前に旧プロセスの終了待ち+チューナーの物理ロック/デスクランブル
+// 鍵同期を同期的に行うため、応答まで数秒〜(実測でBS4K最大8秒程度)かかることが
+// ある。この間サーバーは接続を保持したまま無応答になるだけで拒否したわけでは
+// ないため、途中で見切って新規接続を張り直すと、サーバー側では前の要求が
+// 中断されたと判断されて後始末が再度走った上、TLVFilterの同期もやり直しになり
+// かえって遅くなる(実測: 見切って再接続すると合計約2.5秒余分にかかった)。
+// TVTest(LibISDB)側のBonDriver応答待ちタイムアウトは10秒固定でこちらからは
+// 変更できないため、タイムアウト値を伸ばす調整は際限のないいたちごっこになる。
+// そのため接続を張り直すリトライはやめ、1回の接続で(それより十分長く)待ち続ける。
+#define HTTP_STATUS_TIMEOUT_MS			30000			// HTTPステータス受信タイムアウト(ms)
 
 
 //////////////////////////////////////////////////////////////////////
@@ -1238,11 +1236,10 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	try{
 		std::string serverRequest = "GET " + url +" HTTP/1.0\r\nX-Mirakurun-Priority: " + std::to_string(g_Priority) + "\r\n\r\n";
 
-		// サーバー側で直前のチャンネルの旧接続がまだ解放されておらず、
-		// 同一優先度の新規ストリーム要求が一時的に拒否される(200以外が返る)ことがあるため、
-		// 失敗時は少し待ってリトライする
+		// 接続を張り直すリトライはせず、1回の接続でサーバーの応答を待ち続ける
+		// (理由は上のHTTP_STATUS_TIMEOUT_MSのコメントを参照)
 		int httpStatus = 0;
-		for (int attempt = 1; attempt <= CHANNEL_CONNECT_RETRY_MAX; attempt++) {
+		{
 			const ULONGLONG dwAttemptStart = ::GetTickCount64();
 			struct addrinfo hints;
 			struct addrinfo* res = NULL;
@@ -1295,32 +1292,24 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			const ULONGLONG dwSendDone = ::GetTickCount64();
 
 			// レスポンスのステータスコードを確認する
-			// (チューナー未解放等により200以外が返る場合はリトライする)
 			const bool bStatusOk = RecvHttpStatusCode(m_sock, httpStatus, HTTP_STATUS_TIMEOUT_MS) && httpStatus == 200;
 			const ULONGLONG dwRecvDone = ::GetTickCount64();
 
 			{
 				TCHAR szDebugOut[256];
 				::StringCbPrintf(szDebugOut, _countof(szDebugOut),
-					TEXT("%s: CBonTuner::SetChannel() attempt %d/%d status=%d connect=%llums send=%llums recv=%llums since_start=%llums\n"),
-					TEXT(TUNER_NAME), attempt, CHANNEL_CONNECT_RETRY_MAX, httpStatus,
+					TEXT("%s: CBonTuner::SetChannel() status=%d connect=%llums send=%llums recv=%llums since_start=%llums\n"),
+					TEXT(TUNER_NAME), httpStatus,
 					dwConnectDone - dwAttemptStart, dwSendDone - dwConnectDone, dwRecvDone - dwSendDone,
 					dwRecvDone - dwSetChannelStart);
 				::OutputDebugString(szDebugOut);
 			}
 
-			if (bStatusOk) {
-				break;
-			}
-
-			closesocket(m_sock);
-			m_sock = INVALID_SOCKET;
-
-			if (attempt == CHANNEL_CONNECT_RETRY_MAX) {
+			if (!bStatusOk) {
+				closesocket(m_sock);
+				m_sock = INVALID_SOCKET;
 				throw 6UL;
 			}
-
-			::Sleep(CHANNEL_CONNECT_RETRY_WAIT_MS);
 		}
 
 		// イベント作成
