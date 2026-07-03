@@ -585,6 +585,9 @@ void CBonTuner::CloseTuner()
 	//  性質上ブロックしない)
 	CAutoLock lock(m_ChannelLock);
 
+	// 調査用: どの処理で時間がかかっているか切り分けるための計測
+	const ULONGLONG dwCloseStart = ::GetTickCount64();
+
 	// スレッド終了要求セット
 	m_bLoopIoThread = FALSE;
 
@@ -607,6 +610,7 @@ void CBonTuner::CloseTuner()
 	// (PopIoThreadはm_hOnStreamEventにSetEvent()するため、そのハンドルは
 	//  スレッドが完全に終了した後でなければ閉じてはならない)
 	if (m_hPushIoThread) {
+		const ULONGLONG dwWaitStart = ::GetTickCount64();
 		if (::WaitForSingleObject(m_hPushIoThread, 1000) != WAIT_OBJECT_0) {
 			// スレッド強制終了
 #pragma warning(push)
@@ -617,6 +621,10 @@ void CBonTuner::CloseTuner()
 			TCHAR szDebugOut[128];
 			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPushIoThread)\n"), TEXT(TUNER_NAME));
 			::OutputDebugString(szDebugOut);
+		} else {
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PushIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
+			::OutputDebugString(szDebugOut);
 		}
 
 		::CloseHandle(m_hPushIoThread);
@@ -624,6 +632,7 @@ void CBonTuner::CloseTuner()
 	}
 
 	if (m_hPopIoThread) {
+		const ULONGLONG dwWaitStart = ::GetTickCount64();
 		if (::WaitForSingleObject(m_hPopIoThread, 1000) != WAIT_OBJECT_0) {
 			// スレッド強制終了
 #pragma warning(push)
@@ -633,6 +642,10 @@ void CBonTuner::CloseTuner()
 			TCHAR szDebugOut[128];
 			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPopIoThread)\n"), TEXT(TUNER_NAME));
 			::OutputDebugString(szDebugOut);
+		} else {
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PopIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
+			::OutputDebugString(szDebugOut);
 		}
 
 		::CloseHandle(m_hPopIoThread);
@@ -641,6 +654,7 @@ void CBonTuner::CloseTuner()
 
 #ifdef ENABLE_MMT4K
 	if (m_hMmtConvertThread) {
+		const ULONGLONG dwWaitStart = ::GetTickCount64();
 		if (::WaitForSingleObject(m_hMmtConvertThread, 1000) != WAIT_OBJECT_0) {
 			// スレッド強制終了
 #pragma warning(push)
@@ -649,6 +663,10 @@ void CBonTuner::CloseTuner()
 #pragma warning(pop)
 			TCHAR szDebugOut[128];
 			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hMmtConvertThread)\n"), TEXT(TUNER_NAME));
+			::OutputDebugString(szDebugOut);
+		} else {
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() MmtConvertThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
 			::OutputDebugString(szDebugOut);
 		}
 
@@ -696,6 +714,12 @@ void CBonTuner::CloseTuner()
 
 	m_fBitRate = 0.0f;
 	m_dwRecvBytes = 0UL;
+
+	{
+		TCHAR szDebugOut[128];
+		::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() total elapsed = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwCloseStart);
+		::OutputDebugString(szDebugOut);
+	}
 }
 
 const DWORD CBonTuner::WaitTsStream(const DWORD dwTimeOut)
@@ -1172,8 +1196,17 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 
 	if (url.empty()) return FALSE;
 
+	// 調査用: どの処理で時間がかかっているか切り分けるための計測
+	const ULONGLONG dwSetChannelStart = ::GetTickCount64();
+
 	// 一旦クローズ
 	CloseTuner();
+
+	{
+		TCHAR szDebugOut[128];
+		::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::SetChannel() CloseTuner elapsed = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwSetChannelStart);
+		::OutputDebugString(szDebugOut);
+	}
 
 #ifdef ENABLE_MMT4K
 	m_bMmtMode = bIsMmt;
@@ -1210,6 +1243,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		// 失敗時は少し待ってリトライする
 		int httpStatus = 0;
 		for (int attempt = 1; attempt <= CHANNEL_CONNECT_RETRY_MAX; attempt++) {
+			const ULONGLONG dwAttemptStart = ::GetTickCount64();
 			struct addrinfo hints;
 			struct addrinfo* res = NULL;
 			struct addrinfo* ai;
@@ -1249,6 +1283,8 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 				throw 1UL;
 			}
 
+			const ULONGLONG dwConnectDone = ::GetTickCount64();
+
 			if (send(m_sock, serverRequest.c_str(), (int)serverRequest.length(), 0) < 0) {
 				TCHAR szDebugOut[128];
 				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() send error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
@@ -1256,15 +1292,26 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 				throw 1UL;
 			}
 
+			const ULONGLONG dwSendDone = ::GetTickCount64();
+
 			// レスポンスのステータスコードを確認する
 			// (チューナー未解放等により200以外が返る場合はリトライする)
-			if (RecvHttpStatusCode(m_sock, httpStatus, HTTP_STATUS_TIMEOUT_MS) && httpStatus == 200) {
-				break;
+			const bool bStatusOk = RecvHttpStatusCode(m_sock, httpStatus, HTTP_STATUS_TIMEOUT_MS) && httpStatus == 200;
+			const ULONGLONG dwRecvDone = ::GetTickCount64();
+
+			{
+				TCHAR szDebugOut[256];
+				::StringCbPrintf(szDebugOut, _countof(szDebugOut),
+					TEXT("%s: CBonTuner::SetChannel() attempt %d/%d status=%d connect=%llums send=%llums recv=%llums since_start=%llums\n"),
+					TEXT(TUNER_NAME), attempt, CHANNEL_CONNECT_RETRY_MAX, httpStatus,
+					dwConnectDone - dwAttemptStart, dwSendDone - dwConnectDone, dwRecvDone - dwSendDone,
+					dwRecvDone - dwSetChannelStart);
+				::OutputDebugString(szDebugOut);
 			}
 
-			TCHAR szDebugOut[192];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::SetChannel() http status = %d (attempt %d/%d)\n"), TEXT(TUNER_NAME), httpStatus, attempt, CHANNEL_CONNECT_RETRY_MAX);
-			::OutputDebugString(szDebugOut);
+			if (bStatusOk) {
+				break;
+			}
 
 			closesocket(m_sock);
 			m_sock = INVALID_SOCKET;
@@ -1350,7 +1397,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	} catch (const DWORD dwErrorStep) {
 		// エラー発生
 		TCHAR szDebugOut[1024];
-		::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() dwErrorStep = %lu\n"), TEXT(TUNER_NAME), dwErrorStep);
+		::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::OpenTuner() dwErrorStep = %lu (SetChannel elapsed = %llu ms)\n"), TEXT(TUNER_NAME), dwErrorStep, ::GetTickCount64() - dwSetChannelStart);
 		::OutputDebugString(szDebugOut);
 
 		CloseTuner();
@@ -1363,6 +1410,12 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 
 	// TSデータパージ
 	PurgeTsStream();
+
+	{
+		TCHAR szDebugOut[128];
+		::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::SetChannel() total elapsed = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwSetChannelStart);
+		::OutputDebugString(szDebugOut);
+	}
 
 	return TRUE;
 }
