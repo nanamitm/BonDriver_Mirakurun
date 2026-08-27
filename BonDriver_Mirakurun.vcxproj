@@ -240,16 +240,7 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
     <ClCompile Include="thirdparty\dantto4k\src\aes.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="thirdparty\dantto4k\src\aribEncoder.cpp">
-      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="thirdparty\dantto4k\src\aribUtil.cpp">
-      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\b24Color.cpp">
-      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="thirdparty\dantto4k\src\b24SubtitleConvertor.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\caMessage.cpp">
@@ -525,10 +516,40 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
     <ClCompile Include="thirdparty\dantto4k\src\transmissionControlSignal.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="thirdparty\dantto4k\src\ttml.cpp">
+    <ClCompile Include="thirdparty\dantto4k\src\videoComponentDescriptor.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="thirdparty\dantto4k\src\videoComponentDescriptor.cpp">
+    <ClCompile Include="thirdparty\dantto4k\src\additionalAribSubtitleInfo.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\aribCharsetEncoder.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\aribCharsetTables.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\aribTextEncoder.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\b24SubtitleConverter.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ntpTimestamp.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ttml\b24_converter.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ttml\drcs.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ttml\parser.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ttml\resolver.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\ttml\style.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
   </ItemGroup>
