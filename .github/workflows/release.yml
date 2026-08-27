@@ -13,12 +13,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Build (Release|x64)
         run: msbuild BonDriver_Mirakurun.sln /p:Configuration=Release /p:Platform=x64 /m
@@ -35,14 +35,14 @@ jobs:
           Compress-Archive -Path "$dist\*" -DestinationPath "BonDriver_Mirakurun_x64.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BonDriver_Mirakurun_x64
           path: BonDriver_Mirakurun_x64.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: BonDriver_Mirakurun_x64.zip
         env:
