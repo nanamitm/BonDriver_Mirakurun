@@ -3,6 +3,8 @@
 
 #include <iostream>
 
+#include <windows.h>
+
 #include "acasHandler.h"
 #include "casProxy.h"
 #include "config.h"
@@ -38,6 +40,34 @@ public:
 		MmtsRecorder::OnMpt(mpt);
 	}
 };
+
+// ACAS復号に使うwinscard.dllの既定パス(System32の本物)を絶対パスで返す。
+// dantto4kはcustomWinscardDLLが空だとLoadLibraryA("winscard.dll")を呼ぶが、
+// その解決には通常のDLL検索順が使われるため、ホストアプリ(TVTest等)の実行ファイルが
+// 置かれたフォルダにwinscard.dllの差し替え版があるとそちらが先に読み込まれてしまう。
+// 差し替え版DLLをホストアプリと共有すると、双方が独立にSCardConnect/SCardDisconnectを
+// 行った結果DLL内部のグローバル状態を壊し合い、BonDriverの解放時(=別BonDriverへの
+// 切り替え時)にホストアプリ側がwinscard.dll内でアクセス違反を起こす。
+// ACASカードは実カードリーダーで読む必要があり差し替え版を使う理由もないため、
+// 既定ではSystem32のものを明示的に指す。
+std::string GetDefaultWinscardPath()
+{
+	char szSystemDir[MAX_PATH];
+	const UINT uLen = ::GetSystemDirectoryA(szSystemDir, MAX_PATH);
+
+	if (uLen == 0 || uLen >= MAX_PATH) {
+		// 取得できない場合は従来通りDLL検索順に委ねる
+		return std::string("winscard.dll");
+	}
+
+	std::string path(szSystemDir, uLen);
+	if (path.back() != '\\') {
+		path += '\\';
+	}
+	path += "winscard.dll";
+
+	return path;
+}
 
 } // namespace
 
@@ -76,7 +106,7 @@ bool Mmt4kConverter::Init(const std::string& smartCardReaderName, const std::str
 {
 	config.smartCardReaderName = smartCardReaderName;
 	config.casProxyServer = casProxyServer;
-	config.customWinscardDLL = customWinscardDLL;
+	config.customWinscardDLL = customWinscardDLL.empty() ? GetDefaultWinscardPath() : customWinscardDLL;
 	config.convertResolutionGaiji = convertResolutionGaiji;
 
 	try {
