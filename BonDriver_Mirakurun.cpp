@@ -680,6 +680,51 @@ void CBonTuner::CloseTuner()
 		m_hOnStreamEvent = NULL;
 	}
 
+	// ソケットクローズ
+	// (バッファ(AsyncIoReq)の解放より必ず前に行う。未完了のWSARecvが残ったまま
+	//  バッファを解放すると、カーネルが解放済みヒープ上のWSAOVERLAPPED/RxdBuffへ
+	//  完了状態や受信データを書き戻し、プロセスヒープを破壊する。破壊の顕在化は
+	//  後続の大きなメモリ確保時(例: 別BonDriverのロード時)まで遅れるため、
+	//  原因の分かりにくいクラッシュになる)
+	if (m_sock != INVALID_SOCKET) {
+		if (closesocket(m_sock) == SOCKET_ERROR) {
+			TCHAR szDebugOut[128];
+			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() closesocket error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
+			::OutputDebugString(szDebugOut);
+		}
+		m_sock = INVALID_SOCKET;
+	}
+
+	// 未完了リクエストの完了待ちとイベント開放
+	// (closesocket()により保留中のI/Oはキャンセルされるが、完了通知はごく短い間
+	//  非同期に遅れる。HasOverlappedIoCompleted()がTRUEになるまで待ってから解放する。
+	//  IORS_BUSY以外のスロットのhEventはPopIoRequest()で既に閉じられた古い値なので
+	//  触ってはならない。なお未完了のままイベントを閉じずに抜けるとハンドルリークに
+	//  なるため、TerminateThread()でスレッドを強制終了した場合もここで回収する)
+	if (m_pIoReqBuff) {
+		for (DWORD dwIndex = 0; dwIndex < ASYNCBUFFSIZE; dwIndex++) {
+			AsyncIoReq *pReq = &m_pIoReqBuff[dwIndex];
+
+			if (pReq->dwState != IORS_BUSY || !pReq->OverLapped.hEvent) {
+				continue;
+			}
+
+			if (!HasOverlappedIoCompleted(&pReq->OverLapped)
+					&& ::WaitForSingleObject(pReq->OverLapped.hEvent, 1000) != WAIT_OBJECT_0
+					&& !HasOverlappedIoCompleted(&pReq->OverLapped)) {
+				// ここに来た場合バッファを安全に解放できない。起きないはずだが、
+				// 起きたときに原因を追えるようログを残す
+				TCHAR szDebugOut[128];
+				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() pending I/O did not complete\n"), TEXT(TUNER_NAME));
+				::OutputDebugString(szDebugOut);
+			}
+
+			::CloseHandle(pReq->OverLapped.hEvent);
+			pReq->OverLapped.hEvent = NULL;
+			pReq->dwState = IORS_IDLE;
+		}
+	}
+
 	// バッファ開放
 	FreeIoReqBuff(m_pIoReqBuff);
 	m_pIoReqBuff = NULL;
@@ -689,16 +734,6 @@ void CBonTuner::CloseTuner()
 
 	m_dwBusyReqNum = 0UL;
 	m_dwReadyReqNum = 0UL;
-
-	// ソケットクローズ
-	if (m_sock != INVALID_SOCKET) {
-		if (closesocket(m_sock) == SOCKET_ERROR) {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() closesocket error %d\n"), TEXT(TUNER_NAME), WSAGetLastError());
-			::OutputDebugString(szDebugOut);
-		}
-		m_sock = INVALID_SOCKET;
-	}
 
 	// チャンネル初期化
 	m_dwCurSpace = 0UL;
