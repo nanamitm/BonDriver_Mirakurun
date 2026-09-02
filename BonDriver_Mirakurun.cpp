@@ -1,4 +1,5 @@
 ﻿#include <string>
+#include <stdexcept>
 #include <strsafe.h>
 
 #include "BonDriver_Mirakurun.h"
@@ -1467,6 +1468,11 @@ void CBonTuner::CalcBitRate()
 
 void CBonTuner::GetApiChannels(json& json_array, int service_split)
 {
+	// この関数はCBonTunerのコンストラクタから呼ばれる。Mirakurunが落ちている等で
+	// 応答が得られなくても例外をDLLの外(TVTest)へ投げてはいけないので、失敗した
+	// 場合はチャンネル無しの空配列として扱う
+	json_array = json::array();
+
 	HttpClient client;
 	std::string url = "http://" + std::string(g_ServerHost) + ":" + std::string(g_ServerPort);
 
@@ -1474,5 +1480,22 @@ void CBonTuner::GetApiChannels(json& json_array, int service_split)
 
 	HttpResponse response = client.get(url);
 
-	json_array = json::parse(response.content);
+	if (response.status != 200) {
+		char szDebugOut[256];
+		::StringCbPrintfA(szDebugOut, _countof(szDebugOut), "%s: CBonTuner::GetApiChannels() failed. status = %d, url = %s\n", TUNER_NAME, response.status, url.c_str());
+		::OutputDebugStringA(szDebugOut);
+		return;
+	}
+
+	try {
+		json parsed = json::parse(response.content);
+		if (!parsed.is_array()) {
+			throw std::runtime_error("response is not an array");
+		}
+		json_array = std::move(parsed);
+	} catch (const std::exception &e) {
+		char szDebugOut[256];
+		::StringCbPrintfA(szDebugOut, _countof(szDebugOut), "%s: CBonTuner::GetApiChannels() parse failed. %s\n", TUNER_NAME, e.what());
+		::OutputDebugStringA(szDebugOut);
+	}
 }

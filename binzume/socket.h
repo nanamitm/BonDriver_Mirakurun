@@ -1,4 +1,4 @@
-#ifndef _SOCKET_H
+﻿#ifndef _SOCKET_H
 #define _SOCKET_H
 #include<string>
 
@@ -17,6 +17,8 @@
 #	include <netinet/in.h>
 #	include <netinet/tcp.h>
 #	include <arpa/inet.h>
+#	include <fcntl.h>
+#	include <errno.h>
 #	define closesocket close
 	typedef int SOCKET;
 #endif
@@ -28,7 +30,7 @@
 #endif
 
 
-// �o�C�g�I�[�_�[
+// バイトオーダー
 #ifndef BYTE_ORDER
 #	define LITTLE_ENDIAN 1234
 #	define BIG_ENDIAN    4321
@@ -45,7 +47,7 @@
 #	define BYTE_ORDER LITTLE_ENDIAN
 #endif
 
-// �l�b�g���[�N�o�C�g�I�[�_
+// ネットワークバイトオーダ
 #ifndef NETWORK_BYTE_ORDER
 #	define NETWORK_BYTE_ORDER BIG_ENDIAN
 #endif
@@ -70,7 +72,7 @@ WinsockInit WinsockInit::instance;
 #endif
 #endif
 
-// PDP���Ή�w
+// PDP未対応w
 #if NETWORK_BYTE_ORDER != BYTE_ORDER
 static inline long NN(long x_){
 	unsigned long x = x_;
@@ -92,11 +94,25 @@ class Socket{
 public:
 	SOCKET m_socket;
 	Socket(const SOCKET &soc){m_socket = soc;}
-	Socket(const std::string &host,short port){
+	// connectTimeoutMs / ioTimeoutMs に正の値を渡すと、それぞれ接続待ちと
+	// 送受信待ちに上限を設ける(0以下なら従来通りOS既定のまま待ち続ける)
+	Socket(const std::string &host,short port,int connectTimeoutMs=0,int ioTimeoutMs=0){
 		m_socket=socket(AF_INET, SOCK_STREAM, 0);
-		connect(host, port);
+		if (ioTimeoutMs > 0) {
+			setIoTimeout(ioTimeoutMs);
+		}
+		connect(host, port, connectTimeoutMs);
 	}
 	Socket(){m_socket=socket(AF_INET, SOCK_STREAM, 0);}
+
+	// ノンブロッキングな::connect()が「接続処理を開始した」旨を返したか
+	static bool connectInProgress() {
+#ifdef _WIN32
+		return WSAGetLastError()==WSAEWOULDBLOCK;
+#else
+		return errno==EINPROGRESS;
+#endif
+	}
 
 	static bool getaddr(const std::string &host, in_addr *addr) {
 		hostent *he;
@@ -130,23 +146,96 @@ public:
 		return s;
 	}
 
-	bool connect(const std::string &host, short port){
+	// ブロッキングモードの切り替え
+	bool setBlocking(bool blocking){
+		if (m_socket==INVALID_SOCKET)
+			return false;
+#ifdef _WIN32
+		u_long mode = blocking ? 0 : 1;
+		return ::ioctlsocket(m_socket, FIONBIO, &mode)==0;
+#else
+		int flags = ::fcntl(m_socket, F_GETFL, 0);
+		if (flags < 0) return false;
+		flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+		return ::fcntl(m_socket, F_SETFL, flags)==0;
+#endif
+	}
+
+	// 送受信のタイムアウトを設定する。到達不能になったサーバーに対して
+	// recv()/send()が永久にブロックするのを防ぐ
+	bool setIoTimeout(int timeoutMs){
+		if (m_socket==INVALID_SOCKET || timeoutMs<=0)
+			return false;
+#ifdef _WIN32
+		// WinsockのSO_RCVTIMEO/SO_SNDTIMEOはミリ秒のDWORDを取る
+		int tv = timeoutMs;
+#else
+		timeval tv;
+		tv.tv_sec = timeoutMs/1000;
+		tv.tv_usec = (timeoutMs%1000)*1000;
+#endif
+		bool ok = ::setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv))==0;
+		if (::setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv))!=0) ok = false;
+		return ok;
+	}
+
+	bool connect(const std::string &host, short port, int timeoutMs=0){
 		if(m_socket==INVALID_SOCKET)
 			return false;
 
 		sockaddr_in addr;
 		in_addr inaddr;
 
-		if (!getaddr(host, &inaddr))
+		if (!getaddr(host, &inaddr)) {
+			close();
 			return false;
+		}
 
 		memset (&addr, 0, sizeof(addr));
 		addr.sin_family = AF_INET;
 		addr.sin_port = htons(port);
 		addr.sin_addr = inaddr;
 
-		if(::connect(m_socket, (sockaddr*)&addr, sizeof(addr))!=0) {
-			m_socket=INVALID_SOCKET;
+		if (timeoutMs <= 0) {
+			if(::connect(m_socket, (sockaddr*)&addr, sizeof(addr))!=0) {
+				close();
+				return false;
+			}
+			return true;
+		}
+
+		// 到達不能なホストに対して::connect()はOS既定(Windowsでは20秒程度)まで
+		// ブロックする。一時的にノンブロッキングにしてselect()で待つことで、
+		// 呼び出し側が指定した時間で見切れるようにする
+		if (!setBlocking(false)) {
+			close();
+			return false;
+		}
+
+		bool connected = false;
+		if (::connect(m_socket, (sockaddr*)&addr, sizeof(addr))==0) {
+			connected = true;
+		} else if (connectInProgress()) {
+			fd_set wfds, efds;
+			FD_ZERO(&wfds); FD_SET(m_socket, &wfds);
+			FD_ZERO(&efds); FD_SET(m_socket, &efds);
+
+			timeval tv;
+			tv.tv_sec = timeoutMs/1000;
+			tv.tv_usec = (timeoutMs%1000)*1000;
+
+			if (select((int)m_socket+1, NULL, &wfds, &efds, &tv) > 0 && !FD_ISSET(m_socket, &efds)) {
+				// select()が書き込み可を返しても失敗している場合があるので確認する
+				int soerr = 0;
+				socklen_t len = sizeof(soerr);
+				if (::getsockopt(m_socket, SOL_SOCKET, SO_ERROR, (char*)&soerr, &len)==0 && soerr==0) {
+					connected = true;
+				}
+			}
+		}
+
+		if (!connected || !setBlocking(true)) {
+			close();
 			return false;
 		}
 		return true;
