@@ -1,4 +1,4 @@
-#ifdef ENABLE_MMT4K
+﻿#ifdef ENABLE_MMT4K
 #include "mmt4kConverter.h"
 
 #include <iostream>
