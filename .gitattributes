@@ -1,0 +1,8 @@
+* text=auto eol=crlf
+
+*.md   text eol=lf
+*.yml  text eol=lf
+
+# 同梱した第三者のソースとサブモジュールは上流のバイト列のまま触らない
+nlohmann/**   -text linguist-vendored
+thirdparty/** -text linguist-vendored
