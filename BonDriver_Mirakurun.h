@@ -13,12 +13,10 @@
 #include <ws2tcpip.h>
 #include <InitGuid.h>
 #include "IBonDriver2.h"
-#include "binzume\http.h"
 #include "./nlohmann/json.hpp"
 #include "mmt4kConverter.h"
 
 using namespace std;
-using namespace Net;
 using json = nlohmann::json;
 
 
@@ -144,6 +142,7 @@ protected:
 #endif
 
 	bool m_bTunerOpen;
+	bool m_bWsaInit;
 
 	HANDLE m_hMutex;
 

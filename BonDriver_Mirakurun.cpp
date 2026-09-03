@@ -199,6 +199,182 @@ static bool RecvHttpStatusCode(SOCKET sock, int &statusCode, DWORD dwTimeoutMs)
 	return statusCode != 0;
 }
 
+// タイムアウト付きでTCP接続する
+static SOCKET ConnectWithTimeout(const struct addrinfo *ai, DWORD dwTimeoutMs)
+{
+	SOCKET sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+	if (sock == INVALID_SOCKET) {
+		return INVALID_SOCKET;
+	}
+
+	// 非ブロッキングにしてconnect()の待ち時間を自前で制御する
+	u_long nonBlocking = 1;
+	::ioctlsocket(sock, FIONBIO, &nonBlocking);
+
+	bool connected = false;
+	if (connect(sock, ai->ai_addr, (int)ai->ai_addrlen) == 0) {
+		connected = true;
+	} else if (WSAGetLastError() == WSAEWOULDBLOCK) {
+		fd_set writeSet, exceptSet;
+		FD_ZERO(&writeSet);
+		FD_ZERO(&exceptSet);
+		FD_SET(sock, &writeSet);
+		FD_SET(sock, &exceptSet);
+
+		timeval tv;
+		tv.tv_sec = dwTimeoutMs / 1000;
+		tv.tv_usec = (dwTimeoutMs % 1000) * 1000;
+
+		if (select(0, NULL, &writeSet, &exceptSet, &tv) > 0 && FD_ISSET(sock, &writeSet)) {
+			int soError = 0;
+			int len = sizeof(soError);
+			if (::getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&soError, &len) == 0 && soError == 0) {
+				connected = true;
+			}
+		}
+	}
+
+	// ブロッキングに戻す
+	nonBlocking = 0;
+	::ioctlsocket(sock, FIONBIO, &nonBlocking);
+
+	if (!connected) {
+		closesocket(sock);
+		return INVALID_SOCKET;
+	}
+
+	return sock;
+}
+
+// MirakurunのAPIにHTTP GETし、ステータスコードとボディを得る
+// (チャンネル一覧の取得にだけ使う小さなクライアント。ストリームの受信はこれを通さず、
+//  SetChannel()が直接ソケットを読む)
+// 戻り値: ステータス行を解釈できたらtrue(2xx以外でもtrue。statusCodeで判断すること)
+static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
+                    DWORD dwConnectTimeoutMs = 10000, DWORD dwIoTimeoutMs = 30000)
+{
+	// 壊れた応答でメモリを食い潰さないための上限
+	const size_t MAX_RESPONSE_SIZE = 64 * 1024 * 1024;
+
+	statusCode = 0;
+	body.clear();
+
+	// IPv6/IPv4の候補をすべて受け取り、順に接続を試す
+	struct addrinfo hints;
+	struct addrinfo *res = NULL;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
+	hints.ai_flags = AI_NUMERICSERV;
+	if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
+		return false;
+	}
+
+	SOCKET sock = INVALID_SOCKET;
+	for (const struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+		sock = ConnectWithTimeout(ai, dwConnectTimeoutMs);
+		if (sock != INVALID_SOCKET) {
+			break;
+		}
+	}
+	freeaddrinfo(res);
+
+	if (sock == INVALID_SOCKET) {
+		return false;
+	}
+
+	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwIoTimeoutMs, sizeof(dwIoTimeoutMs));
+	::setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&dwIoTimeoutMs, sizeof(dwIoTimeoutMs));
+
+	// HTTP/1.0 + Connection: close なので、応答は接続が閉じるまで読めばよい
+	const std::string request = "GET " + path + " HTTP/1.0\r\n"
+		"Host: " + std::string(g_ServerHost) + ":" + std::string(g_ServerPort) + "\r\n"
+		"User-Agent: " TUNER_NAME "\r\n"
+		"Accept: application/json\r\n"
+		"Accept-Encoding: identity\r\n"
+		"Connection: close\r\n"
+		"\r\n";
+
+	if (send(sock, request.c_str(), (int)request.length(), 0) < 0) {
+		closesocket(sock);
+		return false;
+	}
+
+	std::string response;
+	char buf[8192];
+	for (;;) {
+		int n = recv(sock, buf, sizeof(buf), 0);
+		if (n <= 0) {
+			break;
+		}
+		response.append(buf, n);
+		if (response.size() > MAX_RESPONSE_SIZE) {
+			closesocket(sock);
+			return false;
+		}
+	}
+	closesocket(sock);
+
+	// ヘッダとボディに分ける
+	size_t headerEnd = response.find("\r\n\r\n");
+	if (headerEnd == std::string::npos) {
+		return false;
+	}
+	const std::string header = response.substr(0, headerEnd);
+	body = response.substr(headerEnd + 4);
+
+	// ステータスライン("HTTP/1.1 200 OK")
+	size_t sp = header.find(' ');
+	if (sp == std::string::npos) {
+		return false;
+	}
+	statusCode = atoi(header.c_str() + sp + 1);
+	if (statusCode == 0) {
+		return false;
+	}
+
+	// ヘッダ名は大文字小文字を区別しないので、探す前に小文字にしておく
+	std::string lower = header;
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+	               [](char c) { return (char)tolower((unsigned char)c); });
+
+	// Mirakurunはchunkedで返してくることがある
+	size_t tePos = lower.find("\r\ntransfer-encoding:");
+	if (tePos != std::string::npos && lower.find("chunked", tePos) != std::string::npos) {
+		std::string decoded;
+		size_t pos = 0;
+		for (;;) {
+			size_t eol = body.find("\r\n", pos);
+			if (eol == std::string::npos) {
+				break;
+			}
+			// チャンクサイズは16進。拡張(";"以降)は読み飛ばす
+			const size_t size = strtoul(body.substr(pos, eol - pos).c_str(), NULL, 16);
+			if (size == 0) {
+				break;
+			}
+			pos = eol + 2;
+			if (pos + size > body.size()) {
+				break;
+			}
+			decoded.append(body, pos, size);
+			pos += size + 2;
+		}
+		body.swap(decoded);
+	} else {
+		size_t lenPos = lower.find("\r\ncontent-length:");
+		if (lenPos != std::string::npos) {
+			const size_t length = strtoul(lower.c_str() + lenPos + 17, NULL, 10);
+			if (length < body.size()) {
+				body.resize(length);
+			}
+		}
+	}
+
+	return true;
+}
+
 
 static int Init(HMODULE hModule)
 {
@@ -366,6 +542,7 @@ HINSTANCE CBonTuner::m_hModule = NULL;
 
 CBonTuner::CBonTuner()
 	: m_bTunerOpen(FALSE)
+	, m_bWsaInit(false)
 	, m_hMutex(NULL)
 	, m_pIoReqBuff(NULL)
 	, m_pIoPushReq(NULL)
@@ -392,6 +569,12 @@ CBonTuner::CBonTuner()
 	::InitializeCriticalSection(&m_MmtLock);
 #endif
 
+	// Winsock初期化
+	// (チャンネル一覧の取得でもソケットを使うので、InitChannel()より前に行う。
+	//  DllMainからではなくCreateBonDriver()経由で呼ばれるので、ここで初期化してよい)
+	WSADATA stWsa;
+	m_bWsaInit = (WSAStartup(MAKEWORD(2, 2), &stWsa) == 0);
+
 	//Initialize channel
 	InitChannel();
 }
@@ -409,7 +592,7 @@ CBonTuner::~CBonTuner()
 #endif
 
 	// Winsock終了
-	if (m_bTunerOpen) {
+	if (m_bWsaInit) {
 		WSACleanup();
 	}
 
@@ -474,10 +657,13 @@ const BOOL CBonTuner::OpenTuner()
 	}
 
 	if (!m_bTunerOpen) {
-		// Winsock初期化
-		WSADATA stWsa;
-		if (WSAStartup(MAKEWORD(2,2), &stWsa) != 0) {
-			return FALSE;
+		if (!m_bWsaInit) {
+			// コンストラクタで失敗していた場合はここでやり直す
+			WSADATA stWsa;
+			m_bWsaInit = (WSAStartup(MAKEWORD(2, 2), &stWsa) == 0);
+			if (!m_bWsaInit) {
+				return FALSE;
+			}
 		}
 		if (g_MagicPacket_Enable) {
 			char magicpacket[102];
@@ -1473,22 +1659,19 @@ void CBonTuner::GetApiChannels(json& json_array, int service_split)
 	// 場合はチャンネル無しの空配列として扱う
 	json_array = json::array();
 
-	HttpClient client;
-	std::string url = "http://" + std::string(g_ServerHost) + ":" + std::string(g_ServerPort);
+	const std::string path = (service_split == 1) ? "/api/services" : "/api/channels";
 
-	url += (service_split == 1) ? "/api/services" : "/api/channels";
-
-	HttpResponse response = client.get(url);
-
-	if (response.status != 200) {
+	int status = 0;
+	std::string body;
+	if (!HttpGet(path, status, body) || status != 200) {
 		char szDebugOut[256];
-		::StringCbPrintfA(szDebugOut, _countof(szDebugOut), "%s: CBonTuner::GetApiChannels() failed. status = %d, url = %s\n", TUNER_NAME, response.status, url.c_str());
+		::StringCbPrintfA(szDebugOut, _countof(szDebugOut), "%s: CBonTuner::GetApiChannels() failed. status = %d, path = %s\n", TUNER_NAME, status, path.c_str());
 		::OutputDebugStringA(szDebugOut);
 		return;
 	}
 
 	try {
-		json parsed = json::parse(response.content);
+		json parsed = json::parse(body);
 		if (!parsed.is_array()) {
 			throw std::runtime_error("response is not an array");
 		}

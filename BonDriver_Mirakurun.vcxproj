@@ -213,8 +213,6 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="binzume\http.h" />
-    <ClInclude Include="binzume\socket.h" />
     <ClInclude Include="BonDriver_Mirakurun.h" />
     <ClInclude Include="IBonDriver.h" />
     <ClInclude Include="IBonDriver2.h" />
