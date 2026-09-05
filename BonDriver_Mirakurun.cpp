@@ -491,7 +491,18 @@ extern "C" __declspec(dllexport) IBonDriver * CreateBonDriver()
 // dantto4kが公開しているものと同一シグネチャ。EDCBがWrite_MMTSプラグインと
 // 本DLLを同一プロセスにロードしている場合、MMT/TLV(4K/8K)チャンネルの
 // 受信streamを復号(ACASデスクランブル解除)のみ行ったままの.mmtsとして直接保存する。
+//
+// dantto4kと違い本DLLはGR/BS/CS等の通常のTSチャンネルも扱うため、
+// 「今このDLLがMMT/TLVを出力しているか」をIsMmtsRecordingAvailable()で
+// Write_MMTS側に伝える。これがFALSEのときWrite_MMTSは通常の.ts保存に
+// フォールバックする(この関数が無いDLL=MMT/TLV専用のdantto4kは常に可用扱い)。
 //////////////////////////////////////////////////////////////////////
+
+extern "C" __declspec(dllexport) BOOL WINAPI IsMmtsRecordingAvailable()
+{
+	CBonTuner *pThis = CBonTuner::m_pThis;
+	return (pThis != NULL && pThis->IsMmtStreamActive()) ? TRUE : FALSE;
+}
 
 extern "C" __declspec(dllexport) BOOL WINAPI StartMmtsRecording(const wchar_t* path, BOOL overwrite, DWORD* sessionId)
 {
@@ -1249,6 +1260,19 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 }
 
 #ifdef ENABLE_MMT4K
+// 現在MMT/TLV(4K/8K)チャンネルのstreamを受信中かどうか。
+// m_bMmtModeはSetChannel()で立つが、CloseTuner()では落とさない(選局前の値が
+// 残る)ため、変換スレッドが動いていることも併せて見る。m_hMmtConvertThreadは
+// SetChannel()で作られCloseTuner()でNULLに戻るので、これが非NULLなら
+// MMT/TLVのstreamを実際に受信・変換中である。
+bool CBonTuner::IsMmtStreamActive()
+{
+	// SetChannel()/CloseTuner()と競合しないようにする
+	CAutoLock lock(m_ChannelLock);
+
+	return m_bMmtMode && m_hMmtConvertThread != NULL;
+}
+
 // MMT/TLV(4K/8K)チャンネル専用: 生の受信データを消費してMMT/TLV→TS変換を行い、
 // 結果をm_MmtOutputQueueに貯める。この重い変換処理(MMT/TLVデマルチプレクス・
 // ACAS復号・TS再多重化)をGetTsStream()の呼び出し元(TVTestの読み出しスレッド)

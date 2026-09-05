@@ -113,6 +113,12 @@ public:
 
 	void Release(void) override;
 
+#ifdef ENABLE_MMT4K
+	// 現在MMT/TLV(4K/8K)チャンネルのstreamを受信中かどうか。
+	// エクスポートのIsMmtsRecordingAvailable()から使う。
+	bool IsMmtStreamActive();
+#endif
+
 	static CBonTuner * m_pThis;
 	static HINSTANCE m_hModule;
 	static char * m_cList[7];
