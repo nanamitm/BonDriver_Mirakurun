@@ -414,6 +414,7 @@ static int Init(HMODULE hModule)
 	::GetPrivateProfileStringA("MMT4K", "CASPROXY_SERVER", "", g_Mmt4kCasProxyServer, _countof(g_Mmt4kCasProxyServer), g_IniFilePath);
 	::GetPrivateProfileStringA("MMT4K", "CUSTOM_WINSCARD_DLL", "", g_Mmt4kCustomWinscardDLL, _countof(g_Mmt4kCustomWinscardDLL), g_IniFilePath);
 	g_Mmt4kConvertResolutionGaiji = ::GetPrivateProfileIntA("MMT4K", "CONVERT_RESOLUTION_GAIJI", 1, g_IniFilePath);
+	g_Mmt4kUseSmartCard = ::GetPrivateProfileIntA("MMT4K", "USE_SMARTCARD", 0, g_IniFilePath);
 #endif
 
 	g_MagicPacket_Enable = ::GetPrivateProfileIntA("GLOBAL", "MAGICPACKET_ENABLE", 0, g_IniFilePath);
@@ -1435,7 +1436,7 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		if (!m_pMmt4kConverter) {
 			m_pMmt4kConverter = std::make_unique<Mmt4kConverter>();
 		}
-		if (!m_pMmt4kConverter->Init(g_Mmt4kSmartCardReaderName, g_Mmt4kCasProxyServer, g_Mmt4kCustomWinscardDLL, g_Mmt4kConvertResolutionGaiji != 0)) {
+		if (!m_pMmt4kConverter->Init(g_Mmt4kSmartCardReaderName, g_Mmt4kCasProxyServer, g_Mmt4kCustomWinscardDLL, g_Mmt4kConvertResolutionGaiji != 0, g_Mmt4kUseSmartCard != 0)) {
 			return FALSE;
 		}
 		m_pMmt4kConverter->Reset();

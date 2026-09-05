@@ -71,6 +71,7 @@ static char g_Mmt4kSmartCardReaderName[256];
 static char g_Mmt4kCasProxyServer[256];
 static char g_Mmt4kCustomWinscardDLL[MAX_PATH];
 static int g_Mmt4kConvertResolutionGaiji;
+static int g_Mmt4kUseSmartCard;
 #endif
 
 class CBonTuner : public IBonDriver2

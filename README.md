@@ -36,8 +36,12 @@ git submodule update --init --recursive
 この機能はx64ビルドのみ対応です(TSDuckの静的ライブラリをx64向けにしかビルドしていないため)。
 Win32(x86)ビルドではMMT/TLV変換は無効になり、従来通りGR/BS/CS等のTS配信のみ利用できます。
 
-ACAS復号にはローカルのB-CASカードリーダー、またはリモートの
-[CasProxyServer](https://github.com/nekohkr/casproxyserver)が必要です。iniの`[MMT4K]`セクションで設定してください。
+既定では受信したstreamを復号済みとみなし、カードリーダーには一切アクセスしません
+(`winscard.dll`の読み込みも行いません)。暗号化されたままの4K/8Kチャンネルを受信・録画する場合は、
+iniの`[MMT4K]`セクションで`USE_SMARTCARD=1`とし、ローカルのB-CASカードリーダーまたはリモートの
+[CasProxyServer](https://github.com/nekohkr/casproxyserver)を用意してください。同セクションの
+`SMARTCARD_READER_NAME`/`CASPROXY_SERVER`/`CUSTOM_WINSCARD_DLL`で接続先を指定できます。
+`USE_SMARTCARD=0`のまま暗号化されたstreamを受けると、鍵を待たずに復号済みとして扱うため映像が乱れます。
 
 ### MMTS保存 (EDCB / Write_MMTS連携)
 

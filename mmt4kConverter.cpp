@@ -102,12 +102,21 @@ struct Mmt4kConverter::Impl
 Mmt4kConverter::Mmt4kConverter() : impl(std::make_unique<Impl>()) {}
 Mmt4kConverter::~Mmt4kConverter() = default;
 
-bool Mmt4kConverter::Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL, bool convertResolutionGaiji)
+bool Mmt4kConverter::Init(const std::string& smartCardReaderName, const std::string& casProxyServer, const std::string& customWinscardDLL, bool convertResolutionGaiji, bool useSmartCard)
 {
 	config.smartCardReaderName = smartCardReaderName;
 	config.casProxyServer = casProxyServer;
 	config.customWinscardDLL = customWinscardDLL.empty() ? GetDefaultWinscardPath() : customWinscardDLL;
 	config.convertResolutionGaiji = convertResolutionGaiji;
+
+	if (!useSmartCard) {
+		// カードリーダーを使わない設定。CASハンドラを付けないだけだと、スクランブル
+		// フラグの立ったパケットは来ない鍵を待ち続けて何も出力されなくなるので、
+		// ペイロードを平文として扱うよう指示する(復号済みのstreamでフラグだけが
+		// 残っている場合も同じ扱いで通る)。winscard.dllはLoadLibraryもしない。
+		impl->demuxer.setAssumeDescrambled(true);
+		return true;
+	}
 
 	try {
 		auto acasHandler = std::make_unique<AcasHandler>();
