@@ -52,9 +52,12 @@ MPEG2-TSに変換せず、受信channelのstreamをACASデスクランブル解�
 `.mmtsmap`)としてそのまま保存できます。
 
 dantto4kと違い本DLLはGR/BS/CS等の通常のTSチャンネルも同じDLLで扱うため、上記に加えて
-`IsMmtsRecordingAvailable`をエクスポートし、「今このDLLがMMT/TLVを受信・変換中か」を
+`IsMmtsRecordingAvailable`をエクスポートし、「MMT/TLVチャンネルを選局中か」を
 Write_MMTS側に伝えます。MMT/TLV以外のチャンネルではこれがFALSEになり、Write_MMTSは
-通常の`.ts`保存にフォールバックします。この判定を持たない
+通常の`.ts`保存にフォールバックします。録画中(`AddTSBuff`の中)からも呼ばれるため、
+選局処理のロックは取らずatomicな値を返すだけにしています。MMT/TLVチャンネル間で選局し直した
+場合にFALSEになるのは`CloseTuner`の実行中だけなので、録画中の再選局で誤検出することはありません。
+この判定を持たない
 [Write_MMTS](https://github.com/nanamitm/Write_MMTS)の古い版と組み合わせると、地上波等の
 録画でもTSが書かれず0バイトの`.mmts`だけが残るため、Write_MMTSも併せて更新してください。
 
