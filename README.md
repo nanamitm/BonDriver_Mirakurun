@@ -49,8 +49,14 @@ iniの`[MMT4K]`セクションで`USE_SMARTCARD=1`とし、ローカルのB-CAS�
 `GetMmtsRecordingStatus`をエクスポートしています。EDCBで
 [Write_MMTS](https://github.com/nanamitm/Write_MMTS)プラグインを使うと、MMT/TLV(4K/8K)チャンネルを
 MPEG2-TSに変換せず、受信channelのstreamをACASデスクランブル解除のみ行った状態で`.mmts`(+索引用の
-`.mmtsmap`)としてそのまま保存できます。GR/BS/CS等の通常チャンネルは今まで通りWrite_MMTSが
-`.ts`として保存します(dantto4k未ロード時と同じフォールバック動作)。
+`.mmtsmap`)としてそのまま保存できます。
+
+dantto4kと違い本DLLはGR/BS/CS等の通常のTSチャンネルも同じDLLで扱うため、上記に加えて
+`IsMmtsRecordingAvailable`をエクスポートし、「今このDLLがMMT/TLVを受信・変換中か」を
+Write_MMTS側に伝えます。MMT/TLV以外のチャンネルではこれがFALSEになり、Write_MMTSは
+通常の`.ts`保存にフォールバックします。この判定を持たない
+[Write_MMTS](https://github.com/nanamitm/Write_MMTS)の古い版と組み合わせると、地上波等の
+録画でもTSが書かれず0バイトの`.mmts`だけが残るため、Write_MMTSも併せて更新してください。
 
 ## License
 This software is released under the MIT License, see LICENSE.
