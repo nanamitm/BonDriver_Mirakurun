@@ -783,6 +783,12 @@ void CBonTuner::CloseTuner()
 	//  性質上ブロックしない)
 	CAutoLock lock(m_ChannelLock);
 
+#ifdef ENABLE_MMT4K
+	// これ以降MMT/TLVは出力しない。SetChannel()から再入した場合は、
+	// 新しいチャンネルの値がこの後すぐ設定し直される
+	m_bMmtStreamAvailable.store(false, std::memory_order_release);
+#endif
+
 	// 調査用: どの処理で時間がかかっているか切り分けるための計測
 	const ULONGLONG dwCloseStart = ::GetTickCount64();
 
@@ -1260,17 +1266,13 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 }
 
 #ifdef ENABLE_MMT4K
-// 現在MMT/TLV(4K/8K)チャンネルのstreamを受信中かどうか。
-// m_bMmtModeはSetChannel()で立つが、CloseTuner()では落とさない(選局前の値が
-// 残る)ため、変換スレッドが動いていることも併せて見る。m_hMmtConvertThreadは
-// SetChannel()で作られCloseTuner()でNULLに戻るので、これが非NULLなら
-// MMT/TLVのstreamを実際に受信・変換中である。
-bool CBonTuner::IsMmtStreamActive()
+// MMT/TLV(4K/8K)チャンネルを選局中かどうか。
+// Write_MMTSは録画中(AddTSBuff()の中)からもこれを問い合わせるため、
+// m_ChannelLockは取らない。SetChannel()は再接続待ちで数秒かかることがあり、
+// そこでブロックすると録画側の書き込みスレッドを止めてしまうため。
+bool CBonTuner::IsMmtStreamActive() const
 {
-	// SetChannel()/CloseTuner()と競合しないようにする
-	CAutoLock lock(m_ChannelLock);
-
-	return m_bMmtMode && m_hMmtConvertThread != NULL;
+	return m_bMmtStreamAvailable.load(std::memory_order_acquire);
 }
 
 // MMT/TLV(4K/8K)チャンネル専用: 生の受信データを消費してMMT/TLV→TS変換を行い、
@@ -1467,6 +1469,12 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	}
 	m_MmtOutputQueue.clear();
 	m_MmtOutputBuffer.clear();
+
+	// MMT/TLVコンバータの用意ができたのでMMTS保存の受け入れを再開する。
+	// この後の接続やスレッド起動で失敗した場合はcatch節のCloseTuner()で
+	// falseに戻る(コンバータのInit失敗による上のreturn FALSEでは、
+	// 冒頭のCloseTuner()でfalseになったまま)
+	m_bMmtStreamAvailable.store(m_bMmtMode, std::memory_order_release);
 #endif
 
 	// バッファ確保

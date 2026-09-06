@@ -8,6 +8,7 @@
 #include <vector>
 #include <algorithm>
 #include <memory>
+#include <atomic>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -114,9 +115,9 @@ public:
 	void Release(void) override;
 
 #ifdef ENABLE_MMT4K
-	// 現在MMT/TLV(4K/8K)チャンネルのstreamを受信中かどうか。
+	// MMT/TLV(4K/8K)チャンネルを選局中かどうか。
 	// エクスポートのIsMmtsRecordingAvailable()から使う。
-	bool IsMmtStreamActive();
+	bool IsMmtStreamActive() const;
 #endif
 
 	static CBonTuner * m_pThis;
@@ -190,6 +191,12 @@ protected:
 #ifdef ENABLE_MMT4K
 	// 現在選局中のチャンネルがMMT/TLV(4K/8K)かどうか。SetChannelで判定する。
 	bool m_bMmtMode = false;
+
+	// IsMmtsRecordingAvailable()が返す値。MMT/TLVチャンネルを選局している間true。
+	// CloseTuner()でfalseに戻し、SetChannel()で新しいチャンネルの値に更新する
+	// (再選局中はCloseTuner()からm_bMmtModeの更新までの短い間だけfalseになる)。
+	// AddTSBuff()の高頻度呼び出しから読むため、ロックを取らずに読めるatomicにする。
+	std::atomic<bool> m_bMmtStreamAvailable{ false };
 	std::unique_ptr<Mmt4kConverter> m_pMmt4kConverter;
 
 	// MmtConvertThreadが生の受信データをMMT/TLV→TS変換し、ここに貯める。
