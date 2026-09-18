@@ -42,8 +42,10 @@ static char g_IniFilePath[MAX_PATH] = { '\0' };
 typedef struct
 {
 	std::u8string name;
-	size_t channel_base;
-	size_t channel_num;
+	// この空間に属するチャンネルのg_Channel_JSON内の実インデックス
+	// (同じtypeのチャンネルがAPIの応答内で連続しているとは限らないため、
+	//  先頭位置+件数ではなく個別に保持する)
+	std::vector<size_t> channel_indices;
 } TSpaceType;
 
 typedef std::vector<TSpaceType> TSpaceTypes;

@@ -92,9 +92,9 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data, bool
 
 	if (pIsMmt) *pIsMmt = false;
 
-	if (space < g_SpaceTypes.size() && ch < g_SpaceTypes[space].channel_num)
+	if (space < g_SpaceTypes.size() && ch < g_SpaceTypes[space].channel_indices.size())
 	{
-		auto index = g_SpaceTypes[space].channel_base + ch;
+		auto index = g_SpaceTypes[space].channel_indices[ch];
 
 		auto ch_json = data[index];
 
@@ -644,19 +644,16 @@ void CBonTuner::InitChannel()
 		}
 
 		// typeが取得できないチャンネルは空間に含めずスキップする(elem_numは
-		// g_Channel_JSON内の実インデックスと対応させる必要があるため、
-		// スキップした場合も必ずインクリメントする)
+		// g_Channel_JSON内の実インデックスなので、スキップした場合も必ず
+		// インクリメントする)
 		if (!type_name.empty())
 		{
 			auto it = std::ranges::find_if(g_SpaceTypes, [&](auto& e) { return e.name == type_name; });
-			if (it != g_SpaceTypes.end())
+			if (it == g_SpaceTypes.end())// 同チューナ空間名が見つからない場合要素を追加
 			{
-				(*it).channel_num++;
+				it = g_SpaceTypes.insert(g_SpaceTypes.end(), TSpaceType{ type_name, {} });
 			}
-			else// 同チューナ空間名が見つからない場合要素を追加
-			{
-				g_SpaceTypes.push_back(TSpaceType{ type_name, elem_num, 1 });
-			}
+			(*it).channel_indices.push_back(elem_num);
 		}
 		elem_num++;
 	}
@@ -1133,10 +1130,10 @@ LPCWSTR CBonTuner::EnumTuningSpace(const DWORD dwSpace)
 
 LPCWSTR CBonTuner::EnumChannelName(const DWORD dwSpace, const DWORD dwChannel)
 {
-	if (dwSpace < g_SpaceTypes.size() && dwChannel < g_SpaceTypes[dwSpace].channel_num)
+	if (dwSpace < g_SpaceTypes.size() && dwChannel < g_SpaceTypes[dwSpace].channel_indices.size())
 	{
 		static std::wstring wChannelName;
-		auto index = g_SpaceTypes[dwSpace].channel_base + dwChannel;
+		auto index = g_SpaceTypes[dwSpace].channel_indices[dwChannel];
 
 		auto ch_json = g_Channel_JSON[index];
 
