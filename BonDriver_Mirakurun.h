@@ -185,10 +185,10 @@ protected:
 
 	void CalcBitRate();
 	void GetApiChannels(json &json_array, int service_split);
-	DWORD m_dwRecvBytes;
+	// 前回のビットレート計算以降の受信バイト数
+	// (PopIoThreadが加算し、GetSignalLevel()の呼び出し元スレッドが読んで0に戻す)
+	std::atomic<ULONGLONG> m_u64RecvBytes;
 	ULONGLONG m_u64LastCalcTick;
-	ULONGLONG m_u64RecvBytes;
-	ULONGLONG m_u64LastCalcByte;
 
 #ifdef ENABLE_MMT4K
 	// 現在選局中のチャンネルがMMT/TLV(4K/8K)かどうか。SetChannelで判定する。

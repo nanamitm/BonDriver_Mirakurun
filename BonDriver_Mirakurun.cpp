@@ -569,7 +569,7 @@ CBonTuner::CBonTuner()
 	, m_dwCurChannel(0xFFFFFFFFUL)
 	, m_sock(INVALID_SOCKET)
 	, m_fBitRate(0.0f)
-	, m_dwRecvBytes(0UL)
+	, m_u64RecvBytes(0ULL)
 	, m_u64LastCalcTick(0ULL)
 {
 	m_pThis = this;
@@ -956,7 +956,7 @@ void CBonTuner::CloseTuner()
 	}
 
 	m_fBitRate = 0.0f;
-	m_dwRecvBytes = 0UL;
+	m_u64RecvBytes.store(0, std::memory_order_relaxed);
 
 	{
 		TCHAR szDebugOut[128];
@@ -1398,12 +1398,9 @@ const BOOL CBonTuner::PopIoRequest(SOCKET sock)
 	}
 
 	// 総受信サイズ加算
-	m_dwRecvBytes += m_pIoPopReq->dwRxdSize;
-
-	// ビットレート計算
-	if (DiffTime(m_u64LastCalcTick,::GetTickCount64()) >= BITRATE_CALC_TIME) {
-		CalcBitRate();
-	}
+	// (ビットレート計算はGetSignalLevel()の呼び出し元スレッドだけで行う。
+	//  ここでも計算するとm_u64LastCalcTick等を2スレッドから同時に書き換えてしまう)
+	m_u64RecvBytes.fetch_add(m_pIoPopReq->dwRxdSize, std::memory_order_relaxed);
 
 	// イベント削除
 	::CloseHandle(m_pIoPopReq->OverLapped.hEvent);
@@ -1682,8 +1679,8 @@ void CBonTuner::CalcBitRate()
 	ULONGLONG u64Span = DiffTime(m_u64LastCalcTick, u64CurrentTick);
 
 	if (u64Span >= BITRATE_CALC_TIME) {
-		m_fBitRate = (float)(((double)m_dwRecvBytes*(8*1000))/((double)u64Span*(1024*1024)));
-		m_dwRecvBytes = 0;
+		const ULONGLONG u64RecvBytes = m_u64RecvBytes.exchange(0, std::memory_order_relaxed);
+		m_fBitRate = (float)(((double)u64RecvBytes*(8*1000))/((double)u64Span*(1024*1024)));
 		m_u64LastCalcTick = u64CurrentTick;
 	}
 	return;
