@@ -661,10 +661,6 @@ void CBonTuner::InitChannel()
 
 const BOOL CBonTuner::OpenTuner()
 {
-	if (g_SpaceTypes.empty()) {
-		return FALSE;
-	}
-
 	if (!m_bTunerOpen) {
 		if (!m_bWsaInit) {
 			// コンストラクタで失敗していた場合はここでやり直す
@@ -761,6 +757,17 @@ const BOOL CBonTuner::OpenTuner()
 
 			if (countdown >= MAGICPACKET_WAIT_SECONDS) {
 				// Failed
+				return FALSE;
+			}
+		}
+
+		// DLLロード時(コンストラクタ)にMirakurunへ繋がらずチャンネル一覧が
+		// 空のままなら取得し直す。これをしないとDLLを読み込み直すまで
+		// 一切開けなくなる。マジックパケットでサーバーを起こした場合も
+		// ここで初めて取得できる
+		if (g_SpaceTypes.empty()) {
+			InitChannel();
+			if (g_SpaceTypes.empty()) {
 				return FALSE;
 			}
 		}
