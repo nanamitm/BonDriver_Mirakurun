@@ -172,6 +172,9 @@ void Mmt4kConverter::Reset()
 	impl->inputBuffer.clear();
 	impl->remuxOutput.clear();
 	impl->demuxer.clear();
+	// The remuxer keeps the previous channel's TSID, PCR and PTS offset;
+	// without this the new channel starts from stale timing state.
+	impl->handler.clear();
 }
 
 #endif // ENABLE_MMT4K
