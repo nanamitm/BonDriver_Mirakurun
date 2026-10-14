@@ -867,14 +867,11 @@ void CBonTuner::CloseTuner()
 				continue;
 			}
 
-			if (!HasOverlappedIoCompleted(&pReq->OverLapped)
-					&& ::WaitForSingleObject(pReq->OverLapped.hEvent, 1000) != WAIT_OBJECT_0
-					&& !HasOverlappedIoCompleted(&pReq->OverLapped)) {
-				// ここに来た場合バッファを安全に解放できない。起きないはずだが、
-				// 起きたときに原因を追えるようログを残す
-				TCHAR szDebugOut[128];
-				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() pending I/O did not complete\n"), TEXT(TUNER_NAME));
-				::OutputDebugString(szDebugOut);
+			// Cancellation completion owns the OVERLAPPED and receive buffer until
+			// Internal leaves STATUS_PENDING. A timeout is not permission to free it.
+			while (!HasOverlappedIoCompleted(&pReq->OverLapped)) {
+				if (::WaitForSingleObject(pReq->OverLapped.hEvent, 1000) == WAIT_FAILED)
+					::Sleep(1);
 			}
 
 			::CloseHandle(pReq->OverLapped.hEvent);
@@ -1308,6 +1305,8 @@ const BOOL CBonTuner::PushIoRequest(SOCKET sock)
 	if (SOCKET_ERROR == WSARecv(sock, &wsaBuf, 1, &m_pIoPushReq->dwRxdSize, &Flags, &m_pIoPushReq->OverLapped, NULL)) {
 		int sock_err = WSAGetLastError();
 		if (sock_err != ERROR_IO_PENDING) {
+			::CloseHandle(m_pIoPushReq->OverLapped.hEvent);
+			m_pIoPushReq->OverLapped.hEvent = NULL;
 			return FALSE;
 		}
 	}
@@ -1359,9 +1358,11 @@ const BOOL CBonTuner::PopIoRequest(SOCKET sock)
 
 	// イベント削除
 	::CloseHandle(m_pIoPopReq->OverLapped.hEvent);
+	m_pIoPopReq->OverLapped.hEvent = NULL;
 
 	if (!bRet) {
-		// エラー発生
+		// The completed error no longer owns an event or pending I/O.
+		m_pIoPopReq->dwState = IORS_IDLE;
 		return FALSE;
 	}
 
