@@ -240,10 +240,78 @@ static SOCKET ConnectWithTimeout(const struct addrinfo *ai, DWORD dwTimeoutMs)
 	return sock;
 }
 
+// 数値フィールド全体を検証する。符号、不正文字、桁あふれを受け付けない。
+static bool ParseHttpSize(std::string value, unsigned base, size_t &result)
+{
+	const size_t first = value.find_first_not_of(" 	");
+	if (first == std::string::npos) return false;
+	value = value.substr(first, value.find_last_not_of(" 	") - first + 1);
+	result = 0;
+	for (unsigned char c : value) {
+		unsigned digit = c >= '0' && c <= '9' ? c - '0' :
+			c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+			c >= 'A' && c <= 'F' ? c - 'A' + 10 : base;
+		if (digit >= base || result > (SIZE_MAX - digit) / base) return false;
+		result = result * base + digit;
+	}
+	return true;
+}
+
+static bool DecodeHttpBody(const std::string &header, std::string &body)
+{
+	std::string lower = header;
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+		[](char c) { return (char)tolower((unsigned char)c); });
+	auto field = [&](const char *name, std::string &value) {
+		const std::string key = std::string("\r\n") + name + ":";
+		const size_t start = lower.find(key);
+		if (start == std::string::npos) return false;
+		const size_t end = lower.find("\r\n", start + key.size());
+		value = lower.substr(start + key.size(), end == std::string::npos ? end : end - start - key.size());
+		return true;
+	};
+	std::string encoding;
+	if (field("transfer-encoding", encoding)) {
+		const size_t first = encoding.find_first_not_of(" 	");
+		if (first == std::string::npos || encoding.substr(first, encoding.find_last_not_of(" 	") - first + 1) != "chunked") return false;
+		std::string decoded;
+		size_t pos = 0;
+		for (;;) {
+			const size_t eol = body.find("\r\n", pos);
+			if (eol == std::string::npos) return false;
+			const std::string line = body.substr(pos, eol - pos);
+			size_t size;
+			if (!ParseHttpSize(line.substr(0, line.find(';')), 16, size)) return false;
+			pos = eol + 2;
+			if (size == 0) {
+				// 最終チャンクの後には空行、またはトレーラと空行が必要。
+				for (;;) {
+					const size_t trailerEnd = body.find("\r\n", pos);
+					if (trailerEnd == std::string::npos) return false;
+					if (trailerEnd == pos) { body.swap(decoded); return true; }
+					const size_t colon = body.find(':', pos);
+					if (colon == std::string::npos || colon >= trailerEnd) return false;
+					pos = trailerEnd + 2;
+				}
+			}
+			if (size > body.size() - pos || body.size() - pos - size < 2 || body.compare(pos + size, 2, "\r\n") != 0) return false;
+			decoded.append(body, pos, size);
+			pos += size + 2;
+		}
+	}
+	std::string lengthValue;
+	if (field("content-length", lengthValue)) {
+		size_t length;
+		if (!ParseHttpSize(lengthValue, 10, length) || body.size() < length) return false;
+		body.resize(length);
+	}
+	return true;
+}
+
 // MirakurunのAPIにHTTP GETし、ステータスコードとボディを得る
 // (チャンネル一覧の取得にだけ使う小さなクライアント。ストリームの受信はこれを通さず、
 //  SetChannel()が直接ソケットを読む)
-// 戻り値: ステータス行を解釈できたらtrue(2xx以外でもtrue。statusCodeで判断すること)
+// 戻り値: 完全な応答を受信・解釈できたらtrue。HTTPエラーはstatusCodeで判断する。
 static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
                     DWORD dwConnectTimeoutMs = 10000, DWORD dwIoTimeoutMs = 30000)
 {
@@ -299,8 +367,10 @@ static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
 	char buf[8192];
 	for (;;) {
 		int n = recv(sock, buf, sizeof(buf), 0);
-		if (n <= 0) {
-			break;
+		if (n == 0) break;
+		if (n < 0) {
+			closesocket(sock);
+			return false;
 		}
 		response.append(buf, n);
 		if (response.size() > MAX_RESPONSE_SIZE) {
@@ -328,44 +398,10 @@ static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
 		return false;
 	}
 
-	// ヘッダ名は大文字小文字を区別しないので、探す前に小文字にしておく
-	std::string lower = header;
-	std::transform(lower.begin(), lower.end(), lower.begin(),
-	               [](char c) { return (char)tolower((unsigned char)c); });
-
-	// Mirakurunはchunkedで返してくることがある
-	size_t tePos = lower.find("\r\ntransfer-encoding:");
-	if (tePos != std::string::npos && lower.find("chunked", tePos) != std::string::npos) {
-		std::string decoded;
-		size_t pos = 0;
-		for (;;) {
-			size_t eol = body.find("\r\n", pos);
-			if (eol == std::string::npos) {
-				break;
-			}
-			// チャンクサイズは16進。拡張(";"以降)は読み飛ばす
-			const size_t size = strtoul(body.substr(pos, eol - pos).c_str(), NULL, 16);
-			if (size == 0) {
-				break;
-			}
-			pos = eol + 2;
-			if (pos + size > body.size()) {
-				break;
-			}
-			decoded.append(body, pos, size);
-			pos += size + 2;
-		}
-		body.swap(decoded);
-	} else {
-		size_t lenPos = lower.find("\r\ncontent-length:");
-		if (lenPos != std::string::npos) {
-			const size_t length = strtoul(lower.c_str() + lenPos + 17, NULL, 10);
-			if (length < body.size()) {
-				body.resize(length);
-			}
-		}
+	if (!DecodeHttpBody(header, body)) {
+		body.clear();
+		return false;
 	}
-
 	return true;
 }
 
