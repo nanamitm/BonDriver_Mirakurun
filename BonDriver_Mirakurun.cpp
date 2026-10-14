@@ -1,4 +1,5 @@
-﻿#include <string>
+﻿#include <new>
+#include <string>
 #include <stdexcept>
 #include <strsafe.h>
 
@@ -152,50 +153,44 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data, bool
 	return url;
 }
 
-// HTTPレスポンスのステータスコードを取得する
-// (ヘッダ終端(\r\n\r\n)まで読み捨てる。ヘッダ以降に読み過ぎたTSデータは破棄するが、
-//  ストリームは継続しているため後続のWSARecvで問題なく続きを受信できる)
-// 戻り値: ステータスラインの受信・パースに成功したらtrue、タイムアウトや切断ならfalse
+// ヘッダだけを消費し、同時に到着したストリーム本体をソケットに残す。
 static bool RecvHttpStatusCode(SOCKET sock, int &statusCode, DWORD dwTimeoutMs)
 {
 	statusCode = 0;
-
-	DWORD dwOldTimeout = 0;
-	int nOldTimeoutLen = sizeof(dwOldTimeout);
-	::getsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&dwOldTimeout, &nOldTimeoutLen);
-	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwTimeoutMs, sizeof(dwTimeoutMs));
-
+	DWORD oldTimeout = 0;
+	int timeoutLen = sizeof(oldTimeout);
+	if (::getsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&oldTimeout, &timeoutLen) != 0) return false;
+	const ULONGLONG deadline = ::GetTickCount64() + dwTimeoutMs;
+	auto receive = [&](char *buf, int length, int flags) {
+		const ULONGLONG now = ::GetTickCount64();
+		if (now >= deadline) return SOCKET_ERROR;
+		const DWORD remaining = (DWORD)(deadline - now);
+		if (::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&remaining, sizeof(remaining)) != 0) return SOCKET_ERROR;
+		return recv(sock, buf, length, flags);
+	};
 	std::string header;
 	char buf[4096];
-	bool bFoundEnd = false;
-
-	// ヘッダ終端が見つかるまで受信する(異常に長いヘッダは打ち切る)
+	bool complete = false;
 	while (header.size() < 16384) {
-		int n = recv(sock, buf, sizeof(buf), 0);
-		if (n <= 0) {
-			break;
+		const int n = receive(buf, (int)(std::min)(sizeof(buf), 16384 - header.size()), MSG_PEEK);
+		if (n <= 0) break;
+		const std::string candidate = header + std::string(buf, n);
+		const size_t end = candidate.find("\r\n\r\n");
+		int left = end == std::string::npos ? n : (int)(end + 4 - header.size());
+		while (left > 0) {
+			const int consumed = receive(buf, left, 0);
+			if (consumed <= 0) break;
+			header.append(buf, consumed);
+			left -= consumed;
 		}
-		header.append(buf, n);
-		if (header.find("\r\n\r\n") != std::string::npos) {
-			bFoundEnd = true;
-			break;
-		}
+		if (left != 0) break;
+		if (end != std::string::npos) { complete = true; break; }
 	}
-
-	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwOldTimeout, sizeof(dwOldTimeout));
-
-	if (!bFoundEnd) {
-		return false;
-	}
-
-	// ステータスライン("HTTP/1.1 200 OK")をパース
-	size_t space1 = header.find(' ');
-	if (space1 == std::string::npos) {
-		return false;
-	}
-
-	statusCode = atoi(header.c_str() + space1 + 1);
-
+	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&oldTimeout, sizeof(oldTimeout));
+	if (!complete) return false;
+	const size_t space = header.find(' ');
+	if (space == std::string::npos) return false;
+	statusCode = atoi(header.c_str() + space + 1);
 	return statusCode != 0;
 }
 
@@ -246,10 +241,78 @@ static SOCKET ConnectWithTimeout(const struct addrinfo *ai, DWORD dwTimeoutMs)
 	return sock;
 }
 
+// 数値フィールド全体を検証する。符号、不正文字、桁あふれを受け付けない。
+static bool ParseHttpSize(std::string value, unsigned base, size_t &result)
+{
+	const size_t first = value.find_first_not_of(" 	");
+	if (first == std::string::npos) return false;
+	value = value.substr(first, value.find_last_not_of(" 	") - first + 1);
+	result = 0;
+	for (unsigned char c : value) {
+		unsigned digit = c >= '0' && c <= '9' ? c - '0' :
+			c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+			c >= 'A' && c <= 'F' ? c - 'A' + 10 : base;
+		if (digit >= base || result > (SIZE_MAX - digit) / base) return false;
+		result = result * base + digit;
+	}
+	return true;
+}
+
+static bool DecodeHttpBody(const std::string &header, std::string &body)
+{
+	std::string lower = header;
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+		[](char c) { return (char)tolower((unsigned char)c); });
+	auto field = [&](const char *name, std::string &value) {
+		const std::string key = std::string("\r\n") + name + ":";
+		const size_t start = lower.find(key);
+		if (start == std::string::npos) return false;
+		const size_t end = lower.find("\r\n", start + key.size());
+		value = lower.substr(start + key.size(), end == std::string::npos ? end : end - start - key.size());
+		return true;
+	};
+	std::string encoding;
+	if (field("transfer-encoding", encoding)) {
+		const size_t first = encoding.find_first_not_of(" 	");
+		if (first == std::string::npos || encoding.substr(first, encoding.find_last_not_of(" 	") - first + 1) != "chunked") return false;
+		std::string decoded;
+		size_t pos = 0;
+		for (;;) {
+			const size_t eol = body.find("\r\n", pos);
+			if (eol == std::string::npos) return false;
+			const std::string line = body.substr(pos, eol - pos);
+			size_t size;
+			if (!ParseHttpSize(line.substr(0, line.find(';')), 16, size)) return false;
+			pos = eol + 2;
+			if (size == 0) {
+				// 最終チャンクの後には空行、またはトレーラと空行が必要。
+				for (;;) {
+					const size_t trailerEnd = body.find("\r\n", pos);
+					if (trailerEnd == std::string::npos) return false;
+					if (trailerEnd == pos) { body.swap(decoded); return true; }
+					const size_t colon = body.find(':', pos);
+					if (colon == std::string::npos || colon >= trailerEnd) return false;
+					pos = trailerEnd + 2;
+				}
+			}
+			if (size > body.size() - pos || body.size() - pos - size < 2 || body.compare(pos + size, 2, "\r\n") != 0) return false;
+			decoded.append(body, pos, size);
+			pos += size + 2;
+		}
+	}
+	std::string lengthValue;
+	if (field("content-length", lengthValue)) {
+		size_t length;
+		if (!ParseHttpSize(lengthValue, 10, length) || body.size() < length) return false;
+		body.resize(length);
+	}
+	return true;
+}
+
 // MirakurunのAPIにHTTP GETし、ステータスコードとボディを得る
 // (チャンネル一覧の取得にだけ使う小さなクライアント。ストリームの受信はこれを通さず、
 //  SetChannel()が直接ソケットを読む)
-// 戻り値: ステータス行を解釈できたらtrue(2xx以外でもtrue。statusCodeで判断すること)
+// 戻り値: 完全な応答を受信・解釈できたらtrue。HTTPエラーはstatusCodeで判断する。
 static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
                     DWORD dwConnectTimeoutMs = 10000, DWORD dwIoTimeoutMs = 30000)
 {
@@ -305,8 +368,10 @@ static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
 	char buf[8192];
 	for (;;) {
 		int n = recv(sock, buf, sizeof(buf), 0);
-		if (n <= 0) {
-			break;
+		if (n == 0) break;
+		if (n < 0) {
+			closesocket(sock);
+			return false;
 		}
 		response.append(buf, n);
 		if (response.size() > MAX_RESPONSE_SIZE) {
@@ -334,44 +399,10 @@ static bool HttpGet(const std::string &path, int &statusCode, std::string &body,
 		return false;
 	}
 
-	// ヘッダ名は大文字小文字を区別しないので、探す前に小文字にしておく
-	std::string lower = header;
-	std::transform(lower.begin(), lower.end(), lower.begin(),
-	               [](char c) { return (char)tolower((unsigned char)c); });
-
-	// Mirakurunはchunkedで返してくることがある
-	size_t tePos = lower.find("\r\ntransfer-encoding:");
-	if (tePos != std::string::npos && lower.find("chunked", tePos) != std::string::npos) {
-		std::string decoded;
-		size_t pos = 0;
-		for (;;) {
-			size_t eol = body.find("\r\n", pos);
-			if (eol == std::string::npos) {
-				break;
-			}
-			// チャンクサイズは16進。拡張(";"以降)は読み飛ばす
-			const size_t size = strtoul(body.substr(pos, eol - pos).c_str(), NULL, 16);
-			if (size == 0) {
-				break;
-			}
-			pos = eol + 2;
-			if (pos + size > body.size()) {
-				break;
-			}
-			decoded.append(body, pos, size);
-			pos += size + 2;
-		}
-		body.swap(decoded);
-	} else {
-		size_t lenPos = lower.find("\r\ncontent-length:");
-		if (lenPos != std::string::npos) {
-			const size_t length = strtoul(lower.c_str() + lenPos + 17, NULL, 10);
-			if (length < body.size()) {
-				body.resize(length);
-			}
-		}
+	if (!DecodeHttpBody(header, body)) {
+		body.clear();
+		return false;
 	}
-
 	return true;
 }
 
@@ -445,6 +476,41 @@ static int Init(HMODULE hModule)
 	return 0;
 }
 
+// ワーカースレッドはそれぞれDLLの参照を1つ持ち、FreeLibraryAndExitThread()で
+// 返して終わる。ワーカーが動いている間はDLLがアンロードされない(=DllMainの
+// DLL_PROCESS_DETACHに来ない)ので、CloseTuner()がローダーロックを握ったまま
+// ワーカーの終了を待つことはない(終了するスレッドもローダーロックを要するため、
+// 待てばデッドロックする)。
+struct WorkerStart {
+	LPTHREAD_START_ROUTINE proc;
+	LPVOID param;
+	HMODULE module;
+};
+
+static DWORD WINAPI WorkerTrampoline(LPVOID pParam)
+{
+	const WorkerStart start = *static_cast<WorkerStart *>(pParam);
+	delete static_cast<WorkerStart *>(pParam);
+	const DWORD result = start.proc(start.param);
+	::FreeLibraryAndExitThread(start.module, result);
+}
+
+static HANDLE StartWorker(LPTHREAD_START_ROUTINE proc, LPVOID param)
+{
+	HMODULE module = NULL;
+	if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+			reinterpret_cast<LPCWSTR>(&WorkerTrampoline), &module)) {
+		return NULL;
+	}
+	WorkerStart *start = new (std::nothrow) WorkerStart{proc, param, module};
+	HANDLE thread = start ? ::CreateThread(NULL, 0UL, WorkerTrampoline, start, 0, NULL) : NULL;
+	if (!thread) {
+		delete start;
+		::FreeLibrary(module);
+	}
+	return thread;
+}
+
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpReserved)
 {
 	switch (fdwReason) {
@@ -457,8 +523,10 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpReserved)
 			break;
 
 		case DLL_PROCESS_DETACH:
-			// 未開放の場合はインスタンス開放
-			if (CBonTuner::m_pThis) {
+			// 未開放の場合はインスタンス開放。プロセス終了時(lpReserved != NULL)は
+			// 他のスレッドがOSに強制終了された後で、ロックを握ったまま消えた
+			// ワーカーがありうる。後始末はOSに任せ、ここでは何もしない。
+			if (CBonTuner::m_pThis && lpReserved == NULL) {
 				CBonTuner::m_pThis->Release();
 			}
 			break;
@@ -798,6 +866,7 @@ void CBonTuner::CloseTuner()
 
 	// スレッド終了要求セット
 	m_bLoopIoThread = FALSE;
+	if (m_hStartIoEvent) ::SetEvent(m_hStartIoEvent);
 
 	// サーバーへの切断通知を最優先で行う
 	// (スレッド終了やハンドル開放より前にshutdown()でFINを即座に送出することで、
@@ -808,80 +877,26 @@ void CBonTuner::CloseTuner()
 		::shutdown(m_sock, SD_BOTH);
 
 		// 保留中の非同期WSARecvを強制キャンセルし、Push/PopIoThreadが速やかに
-		// ループを抜けられるようにする(TerminateThreadでの強制終了は
-		// Winsock内部状態を破壊しソケットが正しく閉じられなくなる恐れがあるため、
-		// できる限り使わずに済むようにする)
+		// ループを抜けられるようにする。ワーカースレッドは正常終了まで待つ。
 		::CancelIoEx((HANDLE)m_sock, NULL);
 	}
 
-	// スレッド終了
-	// (PopIoThreadはm_hOnStreamEventにSetEvent()するため、そのハンドルは
-	//  スレッドが完全に終了した後でなければ閉じてはならない)
-	if (m_hPushIoThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hPushIoThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hPushIoThread, 0);
-#pragma warning(pop)
-
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPushIoThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PushIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hPushIoThread);
-		m_hPushIoThread = NULL;
-	}
-
-	if (m_hPopIoThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hPopIoThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hPopIoThread, 0);
-#pragma warning(pop)
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPopIoThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PopIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hPopIoThread);
-		m_hPopIoThread = NULL;
-	}
-
+	// Never terminate a running worker: it may own a critical section or CAS state.
+	for (HANDLE *thread : {&m_hPushIoThread, &m_hPopIoThread
 #ifdef ENABLE_MMT4K
-	if (m_hMmtConvertThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hMmtConvertThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hMmtConvertThread, 0);
-#pragma warning(pop)
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hMmtConvertThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() MmtConvertThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hMmtConvertThread);
-		m_hMmtConvertThread = NULL;
-	}
+		, &m_hMmtConvertThread
 #endif
+	}) {
+		if (*thread) {
+			::WaitForSingleObject(*thread, INFINITE);
+			::CloseHandle(*thread);
+			*thread = NULL;
+		}
+	}
+	if (m_hStartIoEvent) {
+		::CloseHandle(m_hStartIoEvent);
+		m_hStartIoEvent = NULL;
+	}
 
 	// イベント開放(両スレッドの終了を待った後なので、SetEvent()との競合は起きない)
 	if (m_hOnStreamEvent) {
@@ -907,9 +922,7 @@ void CBonTuner::CloseTuner()
 	// 未完了リクエストの完了待ちとイベント開放
 	// (closesocket()により保留中のI/Oはキャンセルされるが、完了通知はごく短い間
 	//  非同期に遅れる。HasOverlappedIoCompleted()がTRUEになるまで待ってから解放する。
-	//  IORS_BUSY以外のスロットのhEventはPopIoRequest()で既に閉じられた古い値なので
-	//  触ってはならない。なお未完了のままイベントを閉じずに抜けるとハンドルリークに
-	//  なるため、TerminateThread()でスレッドを強制終了した場合もここで回収する)
+	//  IORS_BUSY以外のスロットのhEventはPopIoRequest()で既に閉じている。)
 	if (m_pIoReqBuff) {
 		for (DWORD dwIndex = 0; dwIndex < ASYNCBUFFSIZE; dwIndex++) {
 			AsyncIoReq *pReq = &m_pIoReqBuff[dwIndex];
@@ -918,14 +931,11 @@ void CBonTuner::CloseTuner()
 				continue;
 			}
 
-			if (!HasOverlappedIoCompleted(&pReq->OverLapped)
-					&& ::WaitForSingleObject(pReq->OverLapped.hEvent, 1000) != WAIT_OBJECT_0
-					&& !HasOverlappedIoCompleted(&pReq->OverLapped)) {
-				// ここに来た場合バッファを安全に解放できない。起きないはずだが、
-				// 起きたときに原因を追えるようログを残す
-				TCHAR szDebugOut[128];
-				::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() pending I/O did not complete\n"), TEXT(TUNER_NAME));
-				::OutputDebugString(szDebugOut);
+			// Cancellation completion owns the OVERLAPPED and receive buffer until
+			// Internal leaves STATUS_PENDING. A timeout is not permission to free it.
+			while (!HasOverlappedIoCompleted(&pReq->OverLapped)) {
+				if (::WaitForSingleObject(pReq->OverLapped.hEvent, 1000) == WAIT_FAILED)
+					::Sleep(1);
 			}
 
 			::CloseHandle(pReq->OverLapped.hEvent);
@@ -1079,6 +1089,9 @@ void CBonTuner::PurgeTsStream()
 	::EnterCriticalSection(&m_CriticalSection);
 	m_pIoGetReq = m_pIoPopReq;
 	m_dwReadyReqNum = 0;
+#ifdef ENABLE_MMT4K
+	++m_MmtGeneration;
+#endif
 	::LeaveCriticalSection(&m_CriticalSection);
 
 #ifdef ENABLE_MMT4K
@@ -1215,6 +1228,8 @@ DWORD WINAPI CBonTuner::PushIoThread(LPVOID pParam)
 	::OutputDebugString(TEXT("CBonTuner::PushIoThread() Start!\n"));
 #endif
 	// ドライバにTSデータリクエストを発行する
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
+
 	while (pThis->m_bLoopIoThread) {
 
 		// リクエスト処理待ちが規定未満、かつリング全体(処理待ち+ストア待ち)が
@@ -1249,6 +1264,8 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 	CBonTuner *pThis = (CBonTuner *)pParam;
 
 	// 処理済リクエストをポーリングしてリクエストを完了させる
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
+
 	while (pThis->m_bLoopIoThread) {
 
 		// 処理済データがあればリクエストを完了する
@@ -1288,6 +1305,8 @@ DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 {
 	CBonTuner *pThis = (CBonTuner *)pParam;
 
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
+
 	while (pThis->m_bLoopIoThread) {
 
 		// 生データを1コマ取り出す(GetTsStream()と同じリング操作)。
@@ -1297,9 +1316,11 @@ DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 		BYTE localBuf[TSDATASIZE];
 		DWORD dwRawSize = 0;
 		bool bGot = false;
+		uint64_t generation = 0;
 
 		::EnterCriticalSection(&pThis->m_CriticalSection);
 		if (pThis->m_dwReadyReqNum && pThis->m_pIoGetReq && pThis->m_pIoGetReq->dwState == IORS_RECV) {
+			generation = pThis->m_MmtGeneration.load();
 			dwRawSize = pThis->m_pIoGetReq->dwRxdSize;
 			if (dwRawSize) {
 				::CopyMemory(localBuf, pThis->m_pIoGetReq->RxdBuff, dwRawSize);
@@ -1317,7 +1338,7 @@ DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 
 		// MMT/TLV→TS変換(重い処理はここに隔離する)
 		::EnterCriticalSection(&pThis->m_MmtLock);
-		if (pThis->m_pMmt4kConverter) {
+		if (pThis->m_bLoopIoThread && generation == pThis->m_MmtGeneration.load() && pThis->m_pMmt4kConverter) {
 			pThis->m_pMmt4kConverter->Push(localBuf, dwRawSize);
 			std::vector<uint8_t> out = pThis->m_pMmt4kConverter->TakeOutput();
 			if (!out.empty()) {
@@ -1353,6 +1374,8 @@ const BOOL CBonTuner::PushIoRequest(SOCKET sock)
 	if (SOCKET_ERROR == WSARecv(sock, &wsaBuf, 1, &m_pIoPushReq->dwRxdSize, &Flags, &m_pIoPushReq->OverLapped, NULL)) {
 		int sock_err = WSAGetLastError();
 		if (sock_err != ERROR_IO_PENDING) {
+			::CloseHandle(m_pIoPushReq->OverLapped.hEvent);
+			m_pIoPushReq->OverLapped.hEvent = NULL;
 			return FALSE;
 		}
 	}
@@ -1404,9 +1427,11 @@ const BOOL CBonTuner::PopIoRequest(SOCKET sock)
 
 	// イベント削除
 	::CloseHandle(m_pIoPopReq->OverLapped.hEvent);
+	m_pIoPopReq->OverLapped.hEvent = NULL;
 
 	if (!bRet) {
-		// エラー発生
+		// The completed error no longer owns an event or pending I/O.
+		m_pIoPopReq->dwState = IORS_IDLE;
 		return FALSE;
 	}
 
@@ -1503,30 +1528,17 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			struct addrinfo* ai;
 
 			memset(&hints, 0, sizeof(hints));
-			hints.ai_family = AF_INET6;	//IPv6優先
+			hints.ai_family = AF_UNSPEC;
 			hints.ai_socktype = SOCK_STREAM;
 			hints.ai_protocol = IPPROTO_TCP;
 			hints.ai_flags = AI_NUMERICSERV;
 			if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
-				//printf("getaddrinfo(): %s\n", gai_strerror(err));
-				hints.ai_family = AF_INET;	//IPv4限定
-				if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
-					throw 1UL;
-				}
+				throw 1UL;
 			}
 
 			for (ai = res; ai; ai = ai->ai_next) {
-				m_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-				if (m_sock == INVALID_SOCKET) {
-					continue;
-				}
-
-				if (connect(m_sock, ai->ai_addr, (int)ai->ai_addrlen) >= 0) {
-					// OK
-					break;
-				}
-				closesocket(m_sock);
-				m_sock = INVALID_SOCKET;
+				m_sock = ConnectWithTimeout(ai, 10000);
+				if (m_sock != INVALID_SOCKET) break;
 			}
 			freeaddrinfo(res);
 
@@ -1574,15 +1586,15 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			throw 2UL;
 		}
 
+		m_hStartIoEvent = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+		if (!m_hStartIoEvent) throw 3UL;
 		// スレッド起動
-		DWORD dwPushIoThreadID = 0UL, dwPopIoThreadID = 0UL;
-		m_hPushIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PushIoThread, this, CREATE_SUSPENDED, &dwPopIoThreadID);
-		m_hPopIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PopIoThread, this, CREATE_SUSPENDED, &dwPushIoThreadID);
+		m_hPushIoThread = StartWorker(CBonTuner::PushIoThread, this);
+		m_hPopIoThread = StartWorker(CBonTuner::PopIoThread, this);
 #ifdef ENABLE_MMT4K
 		// MMT/TLV(4K/8K)チャンネルの場合のみ、変換専用スレッドを起動する
-		DWORD dwMmtConvertThreadID = 0UL;
 		if (m_bMmtMode) {
-			m_hMmtConvertThread = ::CreateThread(NULL, 0UL, CBonTuner::MmtConvertThread, this, CREATE_SUSPENDED, &dwMmtConvertThreadID);
+			m_hMmtConvertThread = StartWorker(CBonTuner::MmtConvertThread, this);
 		}
 #endif
 
@@ -1591,49 +1603,12 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			|| (m_bMmtMode && !m_hMmtConvertThread)
 #endif
 			) {
-			if (m_hPushIoThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hPushIoThread, 0UL);
-#pragma warning(pop)
-
-				::CloseHandle(m_hPushIoThread);
-				m_hPushIoThread = NULL;
-			}
-
-			if (m_hPopIoThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hPopIoThread, 0UL);
-#pragma warning(pop)
-				::CloseHandle(m_hPopIoThread);
-				m_hPopIoThread = NULL;
-			}
-
-#ifdef ENABLE_MMT4K
-			if (m_hMmtConvertThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hMmtConvertThread, 0UL);
-#pragma warning(pop)
-				::CloseHandle(m_hMmtConvertThread);
-				m_hMmtConvertThread = NULL;
-			}
-#endif
-
 			throw 3UL;
 		}
-
-		// スレッド開始
+		// 受信開始前にパージし、初回レスポンスの本体を捨てない。
+		PurgeTsStream();
 		m_bLoopIoThread = TRUE;
-		if (::ResumeThread(m_hPushIoThread) == 0xFFFFFFFFUL || ::ResumeThread(m_hPopIoThread) == 0xFFFFFFFFUL) {
-			throw 4UL;
-		}
-#ifdef ENABLE_MMT4K
-		if (m_hMmtConvertThread && ::ResumeThread(m_hMmtConvertThread) == 0xFFFFFFFFUL) {
-			throw 4UL;
-		}
-#endif
+		if (!::SetEvent(m_hStartIoEvent)) throw 4UL;
 
 		// ミューテックス作成
 		if (!(m_hMutex = ::CreateMutex(NULL, TRUE, MUTEX_NAME))) {
@@ -1653,9 +1628,6 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	// チャンネル情報更新
 	m_dwCurSpace = dwSpace;
 	m_dwCurChannel = dwChannel;
-
-	// TSデータパージ
-	PurgeTsStream();
 
 	{
 		TCHAR szDebugOut[128];

@@ -170,7 +170,8 @@ protected:
 
 	HANDLE m_hPushIoThread;
 	HANDLE m_hPopIoThread;
-	BOOL m_bLoopIoThread;
+	std::atomic<bool> m_bLoopIoThread{false};
+	HANDLE m_hStartIoEvent = NULL;
 
 	HANDLE m_hOnStreamEvent;
 
@@ -209,6 +210,7 @@ protected:
 	std::vector<uint8_t> m_MmtOutputBuffer;
 	CRITICAL_SECTION m_MmtLock;
 	HANDLE m_hMmtConvertThread = NULL;
+	std::atomic<uint64_t> m_MmtGeneration{0};
 #endif
 
 };
