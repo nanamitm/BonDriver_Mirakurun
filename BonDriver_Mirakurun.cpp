@@ -1,4 +1,5 @@
-﻿#include <string>
+﻿#include <new>
+#include <string>
 #include <stdexcept>
 #include <strsafe.h>
 
@@ -475,6 +476,41 @@ static int Init(HMODULE hModule)
 	return 0;
 }
 
+// ワーカースレッドはそれぞれDLLの参照を1つ持ち、FreeLibraryAndExitThread()で
+// 返して終わる。ワーカーが動いている間はDLLがアンロードされない(=DllMainの
+// DLL_PROCESS_DETACHに来ない)ので、CloseTuner()がローダーロックを握ったまま
+// ワーカーの終了を待つことはない(終了するスレッドもローダーロックを要するため、
+// 待てばデッドロックする)。
+struct WorkerStart {
+	LPTHREAD_START_ROUTINE proc;
+	LPVOID param;
+	HMODULE module;
+};
+
+static DWORD WINAPI WorkerTrampoline(LPVOID pParam)
+{
+	const WorkerStart start = *static_cast<WorkerStart *>(pParam);
+	delete static_cast<WorkerStart *>(pParam);
+	const DWORD result = start.proc(start.param);
+	::FreeLibraryAndExitThread(start.module, result);
+}
+
+static HANDLE StartWorker(LPTHREAD_START_ROUTINE proc, LPVOID param)
+{
+	HMODULE module = NULL;
+	if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+			reinterpret_cast<LPCWSTR>(&WorkerTrampoline), &module)) {
+		return NULL;
+	}
+	WorkerStart *start = new (std::nothrow) WorkerStart{proc, param, module};
+	HANDLE thread = start ? ::CreateThread(NULL, 0UL, WorkerTrampoline, start, 0, NULL) : NULL;
+	if (!thread) {
+		delete start;
+		::FreeLibrary(module);
+	}
+	return thread;
+}
+
 BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpReserved)
 {
 	switch (fdwReason) {
@@ -487,8 +523,10 @@ BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpReserved)
 			break;
 
 		case DLL_PROCESS_DETACH:
-			// 未開放の場合はインスタンス開放
-			if (CBonTuner::m_pThis) {
+			// 未開放の場合はインスタンス開放。プロセス終了時(lpReserved != NULL)は
+			// 他のスレッドがOSに強制終了された後で、ロックを握ったまま消えた
+			// ワーカーがありうる。後始末はOSに任せ、ここでは何もしない。
+			if (CBonTuner::m_pThis && lpReserved == NULL) {
 				CBonTuner::m_pThis->Release();
 			}
 			break;
@@ -1551,14 +1589,12 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 		m_hStartIoEvent = ::CreateEvent(NULL, TRUE, FALSE, NULL);
 		if (!m_hStartIoEvent) throw 3UL;
 		// スレッド起動
-		DWORD dwPushIoThreadID = 0UL, dwPopIoThreadID = 0UL;
-		m_hPushIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PushIoThread, this, 0, &dwPopIoThreadID);
-		m_hPopIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PopIoThread, this, 0, &dwPushIoThreadID);
+		m_hPushIoThread = StartWorker(CBonTuner::PushIoThread, this);
+		m_hPopIoThread = StartWorker(CBonTuner::PopIoThread, this);
 #ifdef ENABLE_MMT4K
 		// MMT/TLV(4K/8K)チャンネルの場合のみ、変換専用スレッドを起動する
-		DWORD dwMmtConvertThreadID = 0UL;
 		if (m_bMmtMode) {
-			m_hMmtConvertThread = ::CreateThread(NULL, 0UL, CBonTuner::MmtConvertThread, this, 0, &dwMmtConvertThreadID);
+			m_hMmtConvertThread = StartWorker(CBonTuner::MmtConvertThread, this);
 		}
 #endif
 

@@ -242,5 +242,20 @@ int main() {
         tuner.CloseTuner(); check(completed, "retain buffer past one-second cancellation timeout");
         completion.join(); check(tuner.m_pIoReqBuff == nullptr, "release completed buffer");
     }
+    {
+        // Workers hold a module reference and return it on exit, so the DLL
+        // cannot reach DLL_PROCESS_DETACH while one is still running.
+        HMODULE self = nullptr;
+        check(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&WorkerTrampoline), &self), "own module handle");
+        static std::atomic<bool> ran{false};
+        HANDLE worker = StartWorker([](LPVOID) -> DWORD { ran = true; return 7; }, nullptr);
+        check(worker != nullptr, "start module-pinned worker");
+        check(WaitForSingleObject(worker, 5000) == WAIT_OBJECT_0, "module-pinned worker exits");
+        DWORD code = 0;
+        check(GetExitCodeThread(worker, &code) && code == 7 && ran, "worker result passed through");
+        CloseHandle(worker);
+    }
     WSACleanup(); std::cout << "PASS: " << checks << " checks (driver control flow; converter/CAS mocked)\n";
 }
