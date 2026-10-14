@@ -1025,6 +1025,9 @@ void CBonTuner::PurgeTsStream()
 	::EnterCriticalSection(&m_CriticalSection);
 	m_pIoGetReq = m_pIoPopReq;
 	m_dwReadyReqNum = 0;
+#ifdef ENABLE_MMT4K
+	++m_MmtGeneration;
+#endif
 	::LeaveCriticalSection(&m_CriticalSection);
 
 #ifdef ENABLE_MMT4K
@@ -1249,9 +1252,11 @@ DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 		BYTE localBuf[TSDATASIZE];
 		DWORD dwRawSize = 0;
 		bool bGot = false;
+		uint64_t generation = 0;
 
 		::EnterCriticalSection(&pThis->m_CriticalSection);
 		if (pThis->m_dwReadyReqNum && pThis->m_pIoGetReq && pThis->m_pIoGetReq->dwState == IORS_RECV) {
+			generation = pThis->m_MmtGeneration.load();
 			dwRawSize = pThis->m_pIoGetReq->dwRxdSize;
 			if (dwRawSize) {
 				::CopyMemory(localBuf, pThis->m_pIoGetReq->RxdBuff, dwRawSize);
@@ -1269,7 +1274,7 @@ DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 
 		// MMT/TLV→TS変換(重い処理はここに隔離する)
 		::EnterCriticalSection(&pThis->m_MmtLock);
-		if (pThis->m_pMmt4kConverter) {
+		if (pThis->m_bLoopIoThread && generation == pThis->m_MmtGeneration.load() && pThis->m_pMmt4kConverter) {
 			pThis->m_pMmt4kConverter->Push(localBuf, dwRawSize);
 			std::vector<uint8_t> out = pThis->m_pMmt4kConverter->TakeOutput();
 			if (!out.empty()) {

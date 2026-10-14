@@ -210,6 +210,7 @@ protected:
 	std::vector<uint8_t> m_MmtOutputBuffer;
 	CRITICAL_SECTION m_MmtLock;
 	HANDLE m_hMmtConvertThread = NULL;
+	std::atomic<uint64_t> m_MmtGeneration{0};
 #endif
 
 };
