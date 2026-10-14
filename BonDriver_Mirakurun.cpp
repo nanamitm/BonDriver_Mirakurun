@@ -1,4 +1,4 @@
-﻿#include <string>
+#include <string>
 #include <stdexcept>
 #include <strsafe.h>
 
@@ -798,6 +798,7 @@ void CBonTuner::CloseTuner()
 
 	// スレッド終了要求セット
 	m_bLoopIoThread = FALSE;
+	if (m_hStartIoEvent) ::SetEvent(m_hStartIoEvent);
 
 	// サーバーへの切断通知を最優先で行う
 	// (スレッド終了やハンドル開放より前にshutdown()でFINを即座に送出することで、
@@ -814,74 +815,22 @@ void CBonTuner::CloseTuner()
 		::CancelIoEx((HANDLE)m_sock, NULL);
 	}
 
-	// スレッド終了
-	// (PopIoThreadはm_hOnStreamEventにSetEvent()するため、そのハンドルは
-	//  スレッドが完全に終了した後でなければ閉じてはならない)
-	if (m_hPushIoThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hPushIoThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hPushIoThread, 0);
-#pragma warning(pop)
-
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPushIoThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PushIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hPushIoThread);
-		m_hPushIoThread = NULL;
-	}
-
-	if (m_hPopIoThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hPopIoThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hPopIoThread, 0);
-#pragma warning(pop)
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hPopIoThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() PopIoThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hPopIoThread);
-		m_hPopIoThread = NULL;
-	}
-
+	// Never terminate a running worker: it may own a critical section or CAS state.
+	for (HANDLE *thread : {&m_hPushIoThread, &m_hPopIoThread
 #ifdef ENABLE_MMT4K
-	if (m_hMmtConvertThread) {
-		const ULONGLONG dwWaitStart = ::GetTickCount64();
-		if (::WaitForSingleObject(m_hMmtConvertThread, 1000) != WAIT_OBJECT_0) {
-			// スレッド強制終了
-#pragma warning(push)
-#pragma warning(disable:6258)
-			::TerminateThread(m_hMmtConvertThread, 0);
-#pragma warning(pop)
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() ::TerminateThread(m_hMmtConvertThread)\n"), TEXT(TUNER_NAME));
-			::OutputDebugString(szDebugOut);
-		} else {
-			TCHAR szDebugOut[128];
-			::StringCbPrintf(szDebugOut, _countof(szDebugOut), TEXT("%s: CBonTuner::CloseTuner() MmtConvertThread wait = %llu ms\n"), TEXT(TUNER_NAME), ::GetTickCount64() - dwWaitStart);
-			::OutputDebugString(szDebugOut);
-		}
-
-		::CloseHandle(m_hMmtConvertThread);
-		m_hMmtConvertThread = NULL;
-	}
+		, &m_hMmtConvertThread
 #endif
+	}) {
+		if (*thread) {
+			::WaitForSingleObject(*thread, INFINITE);
+			::CloseHandle(*thread);
+			*thread = NULL;
+		}
+	}
+	if (m_hStartIoEvent) {
+		::CloseHandle(m_hStartIoEvent);
+		m_hStartIoEvent = NULL;
+	}
 
 	// イベント開放(両スレッドの終了を待った後なので、SetEvent()との競合は起きない)
 	if (m_hOnStreamEvent) {
@@ -1215,6 +1164,8 @@ DWORD WINAPI CBonTuner::PushIoThread(LPVOID pParam)
 	::OutputDebugString(TEXT("CBonTuner::PushIoThread() Start!\n"));
 #endif
 	// ドライバにTSデータリクエストを発行する
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
+
 	while (pThis->m_bLoopIoThread) {
 
 		// リクエスト処理待ちが規定未満、かつリング全体(処理待ち+ストア待ち)が
@@ -1249,6 +1200,8 @@ DWORD WINAPI CBonTuner::PopIoThread(LPVOID pParam)
 	CBonTuner *pThis = (CBonTuner *)pParam;
 
 	// 処理済リクエストをポーリングしてリクエストを完了させる
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
+
 	while (pThis->m_bLoopIoThread) {
 
 		// 処理済データがあればリクエストを完了する
@@ -1287,6 +1240,8 @@ bool CBonTuner::IsMmtStreamActive() const
 DWORD WINAPI CBonTuner::MmtConvertThread(LPVOID pParam)
 {
 	CBonTuner *pThis = (CBonTuner *)pParam;
+
+	::WaitForSingleObject(pThis->m_hStartIoEvent, INFINITE);
 
 	while (pThis->m_bLoopIoThread) {
 
@@ -1574,15 +1529,17 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			throw 2UL;
 		}
 
+		m_hStartIoEvent = ::CreateEvent(NULL, TRUE, FALSE, NULL);
+		if (!m_hStartIoEvent) throw 3UL;
 		// スレッド起動
 		DWORD dwPushIoThreadID = 0UL, dwPopIoThreadID = 0UL;
-		m_hPushIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PushIoThread, this, CREATE_SUSPENDED, &dwPopIoThreadID);
-		m_hPopIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PopIoThread, this, CREATE_SUSPENDED, &dwPushIoThreadID);
+		m_hPushIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PushIoThread, this, 0, &dwPopIoThreadID);
+		m_hPopIoThread = ::CreateThread(NULL, 0UL, CBonTuner::PopIoThread, this, 0, &dwPushIoThreadID);
 #ifdef ENABLE_MMT4K
 		// MMT/TLV(4K/8K)チャンネルの場合のみ、変換専用スレッドを起動する
 		DWORD dwMmtConvertThreadID = 0UL;
 		if (m_bMmtMode) {
-			m_hMmtConvertThread = ::CreateThread(NULL, 0UL, CBonTuner::MmtConvertThread, this, CREATE_SUSPENDED, &dwMmtConvertThreadID);
+			m_hMmtConvertThread = ::CreateThread(NULL, 0UL, CBonTuner::MmtConvertThread, this, 0, &dwMmtConvertThreadID);
 		}
 #endif
 
@@ -1591,49 +1548,10 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			|| (m_bMmtMode && !m_hMmtConvertThread)
 #endif
 			) {
-			if (m_hPushIoThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hPushIoThread, 0UL);
-#pragma warning(pop)
-
-				::CloseHandle(m_hPushIoThread);
-				m_hPushIoThread = NULL;
-			}
-
-			if (m_hPopIoThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hPopIoThread, 0UL);
-#pragma warning(pop)
-				::CloseHandle(m_hPopIoThread);
-				m_hPopIoThread = NULL;
-			}
-
-#ifdef ENABLE_MMT4K
-			if (m_hMmtConvertThread) {
-#pragma warning(push)
-#pragma warning(disable:6258)
-				::TerminateThread(m_hMmtConvertThread, 0UL);
-#pragma warning(pop)
-				::CloseHandle(m_hMmtConvertThread);
-				m_hMmtConvertThread = NULL;
-			}
-#endif
-
 			throw 3UL;
 		}
-
-		// スレッド開始
 		m_bLoopIoThread = TRUE;
-		if (::ResumeThread(m_hPushIoThread) == 0xFFFFFFFFUL || ::ResumeThread(m_hPopIoThread) == 0xFFFFFFFFUL) {
-			throw 4UL;
-		}
-#ifdef ENABLE_MMT4K
-		if (m_hMmtConvertThread && ::ResumeThread(m_hMmtConvertThread) == 0xFFFFFFFFUL) {
-			throw 4UL;
-		}
-#endif
+		if (!::SetEvent(m_hStartIoEvent)) throw 4UL;
 
 		// ミューテックス作成
 		if (!(m_hMutex = ::CreateMutex(NULL, TRUE, MUTEX_NAME))) {

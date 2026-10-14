@@ -1,4 +1,4 @@
-﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 
 
 #define _PCH_STATIC_CONST
@@ -170,7 +170,8 @@ protected:
 
 	HANDLE m_hPushIoThread;
 	HANDLE m_hPopIoThread;
-	BOOL m_bLoopIoThread;
+	std::atomic<bool> m_bLoopIoThread{false};
+	HANDLE m_hStartIoEvent = NULL;
 
 	HANDLE m_hOnStreamEvent;
 
