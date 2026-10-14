@@ -152,50 +152,44 @@ std::string make_channel_url(DWORD space, DWORD ch, int decode, json& data, bool
 	return url;
 }
 
-// HTTPレスポンスのステータスコードを取得する
-// (ヘッダ終端(\r\n\r\n)まで読み捨てる。ヘッダ以降に読み過ぎたTSデータは破棄するが、
-//  ストリームは継続しているため後続のWSARecvで問題なく続きを受信できる)
-// 戻り値: ステータスラインの受信・パースに成功したらtrue、タイムアウトや切断ならfalse
+// ヘッダだけを消費し、同時に到着したストリーム本体をソケットに残す。
 static bool RecvHttpStatusCode(SOCKET sock, int &statusCode, DWORD dwTimeoutMs)
 {
 	statusCode = 0;
-
-	DWORD dwOldTimeout = 0;
-	int nOldTimeoutLen = sizeof(dwOldTimeout);
-	::getsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&dwOldTimeout, &nOldTimeoutLen);
-	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwTimeoutMs, sizeof(dwTimeoutMs));
-
+	DWORD oldTimeout = 0;
+	int timeoutLen = sizeof(oldTimeout);
+	if (::getsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&oldTimeout, &timeoutLen) != 0) return false;
+	const ULONGLONG deadline = ::GetTickCount64() + dwTimeoutMs;
+	auto receive = [&](char *buf, int length, int flags) {
+		const ULONGLONG now = ::GetTickCount64();
+		if (now >= deadline) return SOCKET_ERROR;
+		const DWORD remaining = (DWORD)(deadline - now);
+		if (::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&remaining, sizeof(remaining)) != 0) return SOCKET_ERROR;
+		return recv(sock, buf, length, flags);
+	};
 	std::string header;
 	char buf[4096];
-	bool bFoundEnd = false;
-
-	// ヘッダ終端が見つかるまで受信する(異常に長いヘッダは打ち切る)
+	bool complete = false;
 	while (header.size() < 16384) {
-		int n = recv(sock, buf, sizeof(buf), 0);
-		if (n <= 0) {
-			break;
+		const int n = receive(buf, (int)(std::min)(sizeof(buf), 16384 - header.size()), MSG_PEEK);
+		if (n <= 0) break;
+		const std::string candidate = header + std::string(buf, n);
+		const size_t end = candidate.find("\r\n\r\n");
+		int left = end == std::string::npos ? n : (int)(end + 4 - header.size());
+		while (left > 0) {
+			const int consumed = receive(buf, left, 0);
+			if (consumed <= 0) break;
+			header.append(buf, consumed);
+			left -= consumed;
 		}
-		header.append(buf, n);
-		if (header.find("\r\n\r\n") != std::string::npos) {
-			bFoundEnd = true;
-			break;
-		}
+		if (left != 0) break;
+		if (end != std::string::npos) { complete = true; break; }
 	}
-
-	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&dwOldTimeout, sizeof(dwOldTimeout));
-
-	if (!bFoundEnd) {
-		return false;
-	}
-
-	// ステータスライン("HTTP/1.1 200 OK")をパース
-	size_t space1 = header.find(' ');
-	if (space1 == std::string::npos) {
-		return false;
-	}
-
-	statusCode = atoi(header.c_str() + space1 + 1);
-
+	::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&oldTimeout, sizeof(oldTimeout));
+	if (!complete) return false;
+	const size_t space = header.find(' ');
+	if (space == std::string::npos) return false;
+	statusCode = atoi(header.c_str() + space + 1);
 	return statusCode != 0;
 }
 
@@ -1543,6 +1537,8 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			) {
 			throw 3UL;
 		}
+		// 受信開始前にパージし、初回レスポンスの本体を捨てない。
+		PurgeTsStream();
 		m_bLoopIoThread = TRUE;
 		if (!::SetEvent(m_hStartIoEvent)) throw 4UL;
 
@@ -1564,9 +1560,6 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 	// チャンネル情報更新
 	m_dwCurSpace = dwSpace;
 	m_dwCurChannel = dwChannel;
-
-	// TSデータパージ
-	PurgeTsStream();
 
 	{
 		TCHAR szDebugOut[128];
