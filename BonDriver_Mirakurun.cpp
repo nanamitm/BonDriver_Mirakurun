@@ -1464,30 +1464,17 @@ const BOOL CBonTuner::SetChannel(const DWORD dwSpace, const DWORD dwChannel)
 			struct addrinfo* ai;
 
 			memset(&hints, 0, sizeof(hints));
-			hints.ai_family = AF_INET6;	//IPv6優先
+			hints.ai_family = AF_UNSPEC;
 			hints.ai_socktype = SOCK_STREAM;
 			hints.ai_protocol = IPPROTO_TCP;
 			hints.ai_flags = AI_NUMERICSERV;
 			if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
-				//printf("getaddrinfo(): %s\n", gai_strerror(err));
-				hints.ai_family = AF_INET;	//IPv4限定
-				if (getaddrinfo(g_ServerHost, g_ServerPort, &hints, &res) != 0) {
-					throw 1UL;
-				}
+				throw 1UL;
 			}
 
 			for (ai = res; ai; ai = ai->ai_next) {
-				m_sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-				if (m_sock == INVALID_SOCKET) {
-					continue;
-				}
-
-				if (connect(m_sock, ai->ai_addr, (int)ai->ai_addrlen) >= 0) {
-					// OK
-					break;
-				}
-				closesocket(m_sock);
-				m_sock = INVALID_SOCKET;
+				m_sock = ConnectWithTimeout(ai, 10000);
+				if (m_sock != INVALID_SOCKET) break;
 			}
 			freeaddrinfo(res);
 
