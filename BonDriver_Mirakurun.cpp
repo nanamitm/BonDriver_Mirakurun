@@ -1,4 +1,4 @@
-#include <string>
+﻿#include <string>
 #include <stdexcept>
 #include <strsafe.h>
 
@@ -839,9 +839,7 @@ void CBonTuner::CloseTuner()
 		::shutdown(m_sock, SD_BOTH);
 
 		// 保留中の非同期WSARecvを強制キャンセルし、Push/PopIoThreadが速やかに
-		// ループを抜けられるようにする(TerminateThreadでの強制終了は
-		// Winsock内部状態を破壊しソケットが正しく閉じられなくなる恐れがあるため、
-		// できる限り使わずに済むようにする)
+		// ループを抜けられるようにする。ワーカースレッドは正常終了まで待つ。
 		::CancelIoEx((HANDLE)m_sock, NULL);
 	}
 
@@ -886,9 +884,7 @@ void CBonTuner::CloseTuner()
 	// 未完了リクエストの完了待ちとイベント開放
 	// (closesocket()により保留中のI/Oはキャンセルされるが、完了通知はごく短い間
 	//  非同期に遅れる。HasOverlappedIoCompleted()がTRUEになるまで待ってから解放する。
-	//  IORS_BUSY以外のスロットのhEventはPopIoRequest()で既に閉じられた古い値なので
-	//  触ってはならない。なお未完了のままイベントを閉じずに抜けるとハンドルリークに
-	//  なるため、TerminateThread()でスレッドを強制終了した場合もここで回収する)
+	//  IORS_BUSY以外のスロットのhEventはPopIoRequest()で既に閉じている。)
 	if (m_pIoReqBuff) {
 		for (DWORD dwIndex = 0; dwIndex < ASYNCBUFFSIZE; dwIndex++) {
 			AsyncIoReq *pReq = &m_pIoReqBuff[dwIndex];
