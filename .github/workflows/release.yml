@@ -25,6 +25,12 @@ jobs:
       - name: Build (Release|x64)
         run: msbuild BonDriver_Mirakurun.sln /p:Configuration=Release /p:Platform=x64 /m
 
+      # ドライバのスレッド・HTTP処理の回帰テスト (変換器と録画は代用品)。
+      # Mirakurun、チューナー、スマートカードは不要。
+      - name: Run driver safety tests
+        shell: pwsh
+        run: ./tests/run-driver-safety.ps1
+
       - name: Package
         shell: pwsh
         run: |
