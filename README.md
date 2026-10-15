@@ -6,6 +6,10 @@ TVTestから[Mirakurun](https://github.com/kanreisa/Mirakurun)を利用する為
 Visual Studio 2022 (v143ツールセット) でビルドしています。x64/Win32いずれの構成もビルド可能ですが、
 4K/8K(MMT/TLV)対応はx64ビルドのみです(詳細は後述)。
 
+ビルドの前に`tools/generate-version-header.ps1`が`git describe --tags --always --dirty`の結果
+(例: `v20261015a-1-g1839140`)を`BonDriver_MirakurunVersion.h`に書き出します(コミットしないファイルです)。
+この版はBonDriver_Mirakurun.dllのファイルのプロパティ(詳細タブ)で確認できます。gitが無い環境では`unknown`になります。
+
 ## ランタイム
 [Microsoft Visual C++ 2015-2022 Redistributable]を必要とします  
 

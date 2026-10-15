@@ -1,0 +1,30 @@
+// The version this build comes from (git describe), shown in the file's
+// properties. tools/generate-version-header.ps1 writes the header from a
+// pre-build step, the way TVTest's TVTestVersionHashGen.bat does.
+#include <winver.h>
+#include "BonDriver_MirakurunVersion.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION BONDRIVER_MIRAKURUN_VERSION_NUMBERS
+ PRODUCTVERSION BONDRIVER_MIRAKURUN_VERSION_NUMBERS
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "BonDriver_Mirakurun (BonDriver for Mirakurun)"
+            VALUE "FileVersion", BONDRIVER_MIRAKURUN_VERSION_STRING
+            VALUE "ProductName", "BonDriver_Mirakurun"
+            VALUE "ProductVersion", BONDRIVER_MIRAKURUN_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

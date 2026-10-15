@@ -111,6 +111,10 @@
       <EntryPointSymbol />
       <TargetMachine>MachineX86</TargetMachine>
     </Link>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-version-header.ps1" -OutFile "$(ProjectDir)BonDriver_MirakurunVersion.h" -Name BONDRIVER_MIRAKURUN</Command>
+      <Message>Generating BonDriver_MirakurunVersion.h</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -138,6 +142,10 @@
       <EntryPointSymbol />
       <TargetMachine>MachineX86</TargetMachine>
     </Link>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-version-header.ps1" -OutFile "$(ProjectDir)BonDriver_MirakurunVersion.h" -Name BONDRIVER_MIRAKURUN</Command>
+      <Message>Generating BonDriver_MirakurunVersion.h</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Midl>
@@ -162,9 +170,11 @@
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <PreBuildEvent>
-      <Command>msbuild "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\config.vcxproj" /t:BuildAllConfig /p:Configuration=$(Configuration);Platform=x64;PlatformToolset=v143 /m
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-version-header.ps1" -OutFile "$(ProjectDir)BonDriver_MirakurunVersion.h" -Name BONDRIVER_MIRAKURUN
+if errorlevel 1 exit /b 1
+msbuild "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\config.vcxproj" /t:BuildAllConfig /p:Configuration=$(Configuration);Platform=x64;PlatformToolset=v143 /m
 msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Configuration=$(Configuration) /p:Platform=x64 /m</Command>
-      <Message>Building TSDuck config headers + static libraries (thirdparty\dantto4k) if out of date</Message>
+      <Message>Generating BonDriver_MirakurunVersion.h, building TSDuck config headers + static libraries (thirdparty\dantto4k) if out of date</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -201,9 +211,11 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
       <TargetMachine>MachineX64</TargetMachine>
     </Link>
     <PreBuildEvent>
-      <Command>msbuild "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\config.vcxproj" /t:BuildAllConfig /p:Configuration=$(Configuration);Platform=x64;PlatformToolset=v143 /m
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate-version-header.ps1" -OutFile "$(ProjectDir)BonDriver_MirakurunVersion.h" -Name BONDRIVER_MIRAKURUN
+if errorlevel 1 exit /b 1
+msbuild "$(SolutionDir)thirdparty\dantto4k\thirdparty\tsduck\scripts\msvc\config.vcxproj" /t:BuildAllConfig /p:Configuration=$(Configuration);Platform=x64;PlatformToolset=v143 /m
 msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Configuration=$(Configuration) /p:Platform=x64 /m</Command>
-      <Message>Building TSDuck config headers + static libraries (thirdparty\dantto4k) if out of date</Message>
+      <Message>Generating BonDriver_MirakurunVersion.h, building TSDuck config headers + static libraries (thirdparty\dantto4k) if out of date</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -218,6 +230,9 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
     <ClInclude Include="IBonDriver2.h" />
     <ClInclude Include="nlohmann\json.hpp" />
     <ClInclude Include="mmt4kConverter.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="BonDriver_Mirakurun.rc" />
   </ItemGroup>
   <!-- dantto4k core (MMT/TLV demux, ACAS decrypt, remux to MPEG2-TS) reused via git submodule.
        x64-only: TSDuck static libs (thirdparty\dantto4k\thirdparty\tsduck) are only built for x64,

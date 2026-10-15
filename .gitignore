@@ -31,3 +31,6 @@ x64/
 Debug/
 Release/
 .vs/
+
+# Written before each build by tools/generate-version-header.ps1.
+BonDriver_MirakurunVersion.h
