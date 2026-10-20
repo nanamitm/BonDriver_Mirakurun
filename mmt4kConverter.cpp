@@ -23,6 +23,8 @@ namespace {
 class MmtsRecordingTapHandler : public MmtTlv::DemuxerHandler
 {
 public:
+	explicit MmtsRecordingTapHandler(MmtTlv::MmtTlvDemuxer& demuxer) : demuxer(demuxer) {}
+
 	void onVideoData(const MmtTlv::MmtStream& stream, const MmtTlv::MfuData& mfu) override
 	{
 		MmtsRecorder::OnVideoData(stream, mfu);
@@ -37,8 +39,12 @@ public:
 	}
 	void onMpt(const MmtTlv::Mpt& mpt) override
 	{
-		MmtsRecorder::OnMpt(mpt);
+		// Pass the demuxer so the .mmtsmap uses the stream indices it registered.
+		MmtsRecorder::OnMpt(mpt, &demuxer);
 	}
+
+private:
+	MmtTlv::MmtTlvDemuxer& demuxer;
 };
 
 // ACAS復号に使うwinscard.dllの既定パス(System32の本物)を絶対パスで返す。
@@ -75,7 +81,7 @@ struct Mmt4kConverter::Impl
 {
 	MmtTlv::MmtTlvDemuxer demuxer;
 	RemuxerHandler handler{ demuxer };
-	MmtsRecordingTapHandler recordingTapHandler;
+	MmtsRecordingTapHandler recordingTapHandler{ demuxer };
 	MmtTlv::DemuxerTeeHandler teeHandler{ handler, recordingTapHandler };
 	std::vector<uint8_t> inputBuffer;
 	std::vector<uint8_t> remuxOutput;
