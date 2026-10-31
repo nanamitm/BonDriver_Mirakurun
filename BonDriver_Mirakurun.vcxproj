@@ -301,6 +301,9 @@ msbuild "$(SolutionDir)thirdparty\dantto4k\msvc\dantto4k.sln" /t:tsducklib /p:Co
     <ClCompile Include="thirdparty\dantto4k\src\ecm.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="thirdparty\dantto4k\src\emm.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="thirdparty\dantto4k\src\emt.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
     </ClCompile>
